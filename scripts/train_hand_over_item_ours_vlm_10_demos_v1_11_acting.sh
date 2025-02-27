@@ -1,0 +1,41 @@
+seed=11
+master_port=23002
+
+python ../train.py \
+    method=PERACT_BC \
+    rlbench.tasks=[bimanual_handover_item_easy] \
+    rlbench.task_name=voxactb_10_demos_${seed}_acting \
+    rlbench.cameras=[wrist_right,wrist_left,front] \
+    rlbench.demos=1 \
+    rlbench.demo_path=/home/hanwen/peractvox/data/train \
+    rlbench.scene_bounds="[-0.3, -0.5, 0.6, 0.7, 0.5, 1.6]" \
+    replay.batch_size=1 \
+    replay.path=/tmp/replay_${master_port} \
+    replay.max_parallel_processes=8 \
+    method.voxel_sizes=[50] \
+    method.voxel_patch_size=5 \
+    method.voxel_patch_stride=5 \
+    method.num_latents=2048 \
+    method.transform_augmentation.apply_se3=True \
+    method.transform_augmentation.aug_rpy=[0.0,0.0,45.0] \
+    method.pos_encoding_with_lang=True \
+    method.which_arm=dominant \
+    method.crop_target_obj_voxel=True \
+    method.crop_radius=0.4 \
+    method.arm_pred_loss=True \
+    method.stopped_buffer_timesteps_overwrite=15 \
+    method.low_dim_size=4 \
+    framework.training_iterations=1000000 \
+    framework.num_weights_to_keep=100 \
+    framework.start_seed=${seed} \
+    framework.log_freq=1000 \
+    framework.save_freq=10000 \
+    framework.logdir=/home/hanwen/peract_logs/ \
+    framework.csv_logging=True \
+    framework.tensorboard_logging=False \
+    framework.wandb_logging=True \
+    framework.load_existing_weights=True \
+    ddp.num_devices=1 \
+    ddp.master_port=${master_port} \
+    ddp.master_addr=localhost 
+

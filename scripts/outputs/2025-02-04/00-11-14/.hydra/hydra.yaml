@@ -1,0 +1,144 @@
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  hydra_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][HYDRA] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    loggers:
+      logging_example:
+        level: DEBUG
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.job.name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  sweeper:
+    _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
+    max_batch_size: null
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    hydra_help: ???
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+  output_subdir: .hydra
+  overrides:
+    hydra: []
+    task:
+    - rlbench.tasks=[hand_over_item]
+    - rlbench.task_name=hand_over_item_10_demos_ours_vlm_v1_11_acting
+    - rlbench.cameras=[front,wrist,wrist2]
+    - rlbench.demo_path=/home/hanwen/voxactb/peract/data/test/hand_over_item_25_demos_corl_v1
+    - rlbench.scene_bounds=[-0.8,-1.0,0.8,1.2,1.0,2.8]
+    - framework.gpu=0
+    - framework.logdir=/home/hanwen/voxactb/peract/logs/
+    - framework.left_arm_ckpt=/home/hanwen/voxactb/peract/logs/hand_over_item_10_demos_ours_vlm_v1_11_stabilizing/PERACT_BC/seed11/weights/250000/QAttentionAgent_layer0.pt
+    - framework.left_arm_train_cfg=/home/hanwen/voxactb/peract/logs/hand_over_item_10_demos_ours_vlm_v1_11_stabilizing/PERACT_BC/seed11/config.yaml
+    - framework.start_seed=11
+    - framework.eval_envs=1
+    - framework.eval_from_eps_number=0
+    - framework.eval_episodes=25
+    - framework.csv_logging=True
+    - framework.tensorboard_logging=False
+    - framework.eval_type=700000
+    - method.which_arm=dominant_assistive
+    - method.no_voxposer=True
+    - rlbench.headless=True
+  job:
+    name: eval
+    override_dirname: framework.csv_logging=True,framework.eval_envs=1,framework.eval_episodes=25,framework.eval_from_eps_number=0,framework.eval_type=700000,framework.gpu=0,framework.left_arm_ckpt=/home/hanwen/voxactb/peract/logs/hand_over_item_10_demos_ours_vlm_v1_11_stabilizing/PERACT_BC/seed11/weights/250000/QAttentionAgent_layer0.pt,framework.left_arm_train_cfg=/home/hanwen/voxactb/peract/logs/hand_over_item_10_demos_ours_vlm_v1_11_stabilizing/PERACT_BC/seed11/config.yaml,framework.logdir=/home/hanwen/voxactb/peract/logs/,framework.start_seed=11,framework.tensorboard_logging=False,method.no_voxposer=True,method.which_arm=dominant_assistive,rlbench.cameras=[front,wrist,wrist2],rlbench.demo_path=/home/hanwen/voxactb/peract/data/test/hand_over_item_25_demos_corl_v1,rlbench.headless=True,rlbench.scene_bounds=[-0.8,-1.0,0.8,1.2,1.0,2.8],rlbench.task_name=hand_over_item_10_demos_ours_vlm_v1_11_acting,rlbench.tasks=[hand_over_item]
+    id: ???
+    num: ???
+    config_name: eval
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.0.5
+    cwd: /home/hanwen/voxactb/peract/scripts
+  verbose: false

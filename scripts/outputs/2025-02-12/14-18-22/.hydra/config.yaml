@@ -1,0 +1,59 @@
+method:
+  name: PERACT_BC
+  which_arm: dominant_assistive
+  variant: two_policies
+  crop_target_obj_voxel: false
+  crop_radius: 0.0
+  voxposer_only_eval: false
+  no_voxposer: true
+  no_acting_stabilizing: false
+  gt_target_object_world_coords: false
+  baseline_name: ''
+  diff_appearance: false
+rlbench:
+  task_name: hand_over_item_10_demos_ours_vlm_v1_11_acting
+  tasks:
+  - hand_over_item
+  demo_path: /home/hanwen/voxactb/peract/data/test/hand_over_item_25_demos_corl_v1
+  episode_length: 25
+  cameras:
+  - front
+  - wrist
+  - wrist2
+  camera_resolution:
+  - 128
+  - 128
+  scene_bounds:
+  - -0.8
+  - -1.0
+  - 0.8
+  - 1.2
+  - 1.0
+  - 2.8
+  include_lang_goal_in_obs: true
+  time_in_state: true
+  headless: true
+framework:
+  tensorboard_logging: false
+  csv_logging: true
+  gpu: 0
+  logdir: /home/hanwen/voxactb/peract/logs/
+  left_arm_ckpt: /home/hanwen/voxactb/peract/logs/hand_over_item_10_demos_ours_vlm_v1_11_stabilizing/PERACT_BC/seed11/weights/950000/QAttentionAgent_layer0.pt
+  left_arm_ckpt_skip: null
+  left_arm_train_cfg: /home/hanwen/voxactb/peract/logs/hand_over_item_10_demos_ours_vlm_v1_11_stabilizing/PERACT_BC/seed11/config.yaml
+  act_arm_ckpt_skip: null
+  start_seed: 11
+  record_every_n: 5
+  eval_envs: 1
+  eval_from_eps_number: 0
+  eval_episodes: 25
+  eval_type: 950000
+  eval_save_metrics: true
+cinematic_recorder:
+  enabled: false
+  camera_resolution:
+  - 1280
+  - 720
+  fps: 30
+  rotate_speed: 0.005
+  save_path: /tmp/videos/
