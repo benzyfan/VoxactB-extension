@@ -30,25 +30,6 @@ class BimanualTransferItem(BimanualTask):
 
         self.boundaries = Shape('transfer_item_boundary')
 
-        # release_wp_index = 6
-        # self.register_waypoint_ability_end(
-        #     release_wp_index,
-        #     lambda wp: self.robot.release_gripper('left')
-        # )
-
-        #self.mid_sensor = ProximitySensor('success_middle')
-
-    def init_episode(self, index: int) -> List[str]:
-
-        self._variation_index = index
-
-        right_success_sensor = ProximitySensor('Panda_rightArm_gripper_attachProxSensor')
-        left_success_sensor = ProximitySensor('Panda_leftArm_gripper_attachProxSensor')
-
-        #b = SpawnBoundary([self.boundaries])
-        #b.clear()
-        #    b.sample(item, min_distance=0.1)
-
 
         seq = [
             GraspedCondition(self.robot.left_gripper, self.item),
@@ -64,6 +45,18 @@ class BimanualTransferItem(BimanualTask):
         self.register_success_conditions([
             ConditionSet(seq, order_matters=True)
         ])
+        # release_wp_index = 6
+        # self.register_waypoint_ability_end(
+        #     release_wp_index,
+        #     lambda wp: self.robot.release_gripper('left')
+        # )
+
+        #self.mid_sensor = ProximitySensor('success_middle')
+
+    def init_episode(self, index: int) -> List[str]:
+
+        self._variation_index = index
+
         # self.register_stop_at_waypoint(8)
 
         return ['pick item from the left',
