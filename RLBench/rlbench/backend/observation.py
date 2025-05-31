@@ -33,6 +33,10 @@ class Observation:
     
     misc: Dict[str, Any]
 
+    #add from voxactb
+    target_object_pos: np.ndarray = None
+    auto_crop_radius: float = None
+
     @property
     @abstractmethod
     def is_bimanual(self):
@@ -44,16 +48,27 @@ class Observation:
 @dataclass 
 class UnimanualObservationData:
 
-    joint_velocities: np.ndarray
-    joint_positions: np.ndarray
-    joint_forces: np.ndarray
-    gripper_open: float
-    gripper_pose: np.ndarray
-    gripper_matrix: np.ndarray
-    gripper_joint_positions: np.ndarray
-    gripper_touch_forces: np.ndarray
+    # joint_velocities: np.ndarray  
+    # joint_positions: np.ndarray
+    # joint_forces: np.ndarray
+    # gripper_open: float
+    # gripper_pose: np.ndarray
+    # gripper_matrix: np.ndarray
+    # gripper_joint_positions: np.ndarray
+    # gripper_touch_forces: np.ndarray
 
-    ignore_collisions: np.ndarray
+    # ignore_collisions: np.ndarray
+
+    
+    joint_velocities: np.ndarray = None
+    joint_positions: np.ndarray = None
+    joint_forces: np.ndarray = None
+    gripper_open: float = None
+    gripper_pose: np.ndarray = None
+    gripper_matrix: np.ndarray = None
+    gripper_joint_positions: np.ndarray = None
+    gripper_touch_forces: np.ndarray = None
+    ignore_collisions: np.ndarray = None
 
 @dataclass
 class UnimanualObservation(UnimanualObservationData, Observation):

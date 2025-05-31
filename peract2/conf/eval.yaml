@@ -31,9 +31,26 @@ framework:
     eval_type: 'last' # or 'best', 'missing', or 'last'
     eval_save_metrics: True
 
+    left_arm_ckpt: null
+    left_arm_ckpt_skip: null
+    left_arm_train_cfg: null
+    act_arm_ckpt_skip: null
+
 cinematic_recorder:
     enabled: False
     camera_resolution: [1280, 720]
     fps: 30
     rotate_speed: 0.005
     save_path: '/tmp/videos/'
+
+method:
+    which_arm: null
+    variant: 'two_policies' # two_policies, one_policy_more_heads
+    crop_target_obj_voxel: False # whether to crop region of object of interest
+    crop_radius: 0.0 # how big is the crop region
+    voxposer_only_eval: False # evalaute VoxPoser in the environment (PerAct is not used)
+    no_voxposer: False # ablation: no VoxPoser
+    no_acting_stabilizing: False # ablation: no acting stabilizing policy formulation
+    gt_target_object_world_coords: False  # whether to use ground truth target_object_world_coords
+    baseline_name: '' # baseline1
+    diff_appearance: False

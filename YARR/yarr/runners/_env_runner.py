@@ -58,6 +58,17 @@ class _EnvRunner(object):
                  env_device: torch.device = None,
                  previous_loaded_weight_folder: str = '',
                  num_eval_runs: int = 1,
+                 left_arm_agent = None,
+                 left_arm_ckpt = None,
+                 which_arm = None,
+                 crop_target_obj_voxel = None,
+                 crop_radius = None,
+                 voxposer_only_eval = False,
+                 no_voxposer = False,
+                 no_acting_stabilizing = False,
+                 baseline_name = '',
+                 gt_target_object_world_coords = False,
+                 kwargs = None
                  ):
         self._train_env = train_env
         self._eval_env = eval_env
@@ -77,6 +88,31 @@ class _EnvRunner(object):
         self._previous_loaded_weight_folder = previous_loaded_weight_folder
 
         self._timesteps = timesteps
+        #Adding for voxactB
+        if left_arm_agent is not None:
+            self._left_arm_agent = left_arm_agent
+            self._left_arm_ckpt = left_arm_ckpt
+            self._which_arm = which_arm
+            self._crop_target_obj_voxel = crop_target_obj_voxel
+            self._crop_radius = crop_radius
+            self._voxposer_only_eval = voxposer_only_eval
+            self._no_voxposer = no_voxposer
+            self._no_acting_stabilizing = no_acting_stabilizing
+            self._baseline_name = baseline_name
+            self._gt_target_object_world_coords = gt_target_object_world_coords
+            self._kwargs = kwargs
+        else:
+            self._left_arm_agent = None
+            self._left_arm_ckpt = None
+            self._which_arm = None
+            self._crop_target_obj_voxel = None
+            self._crop_radius = None
+            self._voxposer_only_eval = None
+            self._no_voxposer = None
+            self._no_acting_stabilizing = None
+            self._baseline_name = None
+            self._gt_target_object_world_coords = None
+            self._kwargs = None
 
         self._p_args = {}
         self.p_failures = {}
@@ -135,6 +171,16 @@ class _EnvRunner(object):
                             time.sleep(1)
                             self._agent.load_weights(d)
                         print('Agent %s: Loaded weights: %s' % (self._name, d))
+
+                        if self._left_arm_agent is not None:
+                            try:
+                                self._left_arm_agent.load_weight(self._left_arm_ckpt)
+                            except FileNotFoundError:
+                                # Rare case when agent hasn't finished writing.
+                                time.sleep(1)
+                                self._left_arm_agent.load_weight(self._left_arm_ckpt)
+                            print(f'Left Arm Agent: Loaded weights: {self._left_arm_ckpt}')
+                        
                         self._new_weights = True
                     else:
                         self._new_weights = False
@@ -170,6 +216,10 @@ class _EnvRunner(object):
 
         self._agent.build(training=False, device=self._env_device)
 
+        if self._left_arm_agent is not None:
+            self._left_arm_agent = copy.deepcopy(self._left_arm_agent)
+            self._left_arm_agent.build(training=False, device=self._env_device)
+
         logging.info('%s: Launching env.' % name)
         np.random.seed()
 
@@ -189,7 +239,8 @@ class _EnvRunner(object):
                 self._step_signal, env, self._agent,
                 self._episode_length, self._timesteps,
                 eval, eval_demo_seed=eval_demo_seed,
-                record_enabled=rec_cfg.enabled)
+                record_enabled=rec_cfg.enabled,
+                left_arm_agent=self._left_arm_agent)
             try:
                 for replay_transition in generator:
                     while True:

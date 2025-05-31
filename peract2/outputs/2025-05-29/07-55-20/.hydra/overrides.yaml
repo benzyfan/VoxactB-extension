@@ -1,0 +1,14 @@
+- method=ACT_BC_LANG
+- rlbench.task_name=2025_05_29_07_45_bimanual_transfer_item_100_baseline_front_0
+- rlbench.tasks=[bimanual_transfer_item]
+- rlbench.demo_path=/project2/seita_1561/data/val/
+- rlbench.camera_resolution=[128,128]
+- rlbench.cameras=[wrist_right,wrist_left,front]
+- rlbench.episode_length=400
+- rlbench.gripper_mode=BimanualGripperJointPosition
+- rlbench.arm_action_mode=BimanualJointPosition
+- rlbench.action_mode=BimanualJointPositionActionMode
+- framework.logdir=/project2/seita_1561/peract_logs
+- framework.eval_episodes=25
+- framework.eval_type=missing
+- framework.start_seed=0

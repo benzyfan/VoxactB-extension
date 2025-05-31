@@ -19,7 +19,7 @@ from yarr.agents.agent import (
 )
 
 from helpers import utils
-from helpers.utils import visualise_voxel, stack_on_channel
+from helpers.utils import visualise_voxel, stack_on_channel,  save_visualised_voxel_npz
 from voxel.voxel_grid import VoxelGrid
 from voxel.augmentation import apply_se3_augmentation
 from einops import rearrange
@@ -782,6 +782,24 @@ class QAttentionPerActBCAgent(Agent):
             prev_layer_bounds = [self._coordinate_bounds.repeat(bs, 1)]
         else:
             prev_layer_bounds = prev_layer_bounds + [bounds]
+
+        # # save for right arms
+        # save_visualised_voxel_npz(
+        #     filepath=f"/home1/hanwenfa/right_voxel_step{step}_wider.npz",
+        #     voxel_grid=self._vis_voxel_grid.detach().cpu().numpy(),
+        #     q_attention=self._right_vis_translation_qvalue.detach().cpu().numpy(),
+        #     highlight_coordinate=self._right_vis_max_coordinate.detach().cpu().numpy(),
+        #     highlight_gt_coordinate=self._right_vis_gt_coordinate.detach().cpu().numpy(),
+        # )
+
+        # # save for left arms 
+        # save_visualised_voxel_npz(
+        #     filepath=f"/home1/hanwenfa/left_voxel_step{step}_wider.npz",
+        #     voxel_grid=self._vis_voxel_grid.detach().cpu().numpy(),
+        #     q_attention=self._left_vis_translation_qvalue.detach().cpu().numpy(),
+        #     highlight_coordinate=self._left_vis_max_coordinate.detach().cpu().numpy(),
+        #     highlight_gt_coordinate=self._left_vis_gt_coordinate.detach().cpu().numpy(),
+        # )
 
         return {
             "total_loss": total_loss,

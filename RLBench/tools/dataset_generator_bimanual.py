@@ -33,10 +33,9 @@ from click_prompt import choice_option
 from click_prompt import filepath_option
 
 
-camera_names = ["over_shoulder_left", "over_shoulder_right", "overhead", "wrist_right", "wrist_left", "front"]
+# camera_names = ["over_shoulder_left", "over_shoulder_right", "overhead", "wrist_right", "wrist_left", "front"]
 
-
-def save_demo(demo, example_path, variation):
+def save_demo(demo, example_path, variation, vlm, camera_names):
     data_types = ["rgb", "depth", "point_cloud", "mask"]
     #full_camera_names = list(map(lambda x: ('_'.join(x), x[-1]), product(camera_names, data_types)))
 
@@ -60,7 +59,12 @@ def save_demo(demo, example_path, variation):
                     elif dtype == 'point_cloud':
                         continue
                     elif dtype == 'mask':
-                        data = Image.fromarray((data * 255).astype(np.uint8))
+                        if vlm:
+                            data = Image.fromarray(data.astype(np.uint8))
+                        elif not vlm:
+                            data = Image.fromarray((data * 255).astype(np.uint8))
+                        else:
+                            logging.error("Vlm setting does not exist!!!!, using --vlm or --no-vlm  !!")
                     else:
                         raise Exception('Invalid data type')    
                     logging.debug("saving %s", camera_full_name)
@@ -77,7 +81,7 @@ def save_demo(demo, example_path, variation):
         pickle.dump(variation, f)
 
 
-def run_all_variations(task_name, headless, save_path, episodes_per_task, image_size):
+def run_all_variations(task_name, headless, save_path, episodes_per_task, image_size, vlm):
     """Each thread will choose one task and variation, and then gather
     all the episodes_per_task for that variation."""
 
@@ -92,39 +96,51 @@ def run_all_variations(task_name, headless, save_path, episodes_per_task, image_
 
     tasks = [task_file_to_task_class(task_name, True)]
 
+    # decide which cameras to use
+    if vlm:
+        camera_names = ["over_shoulder_left", "over_shoulder_right","overhead", "wrist_right", "wrist_left", "front"]
+    else:
+        camera_names = ["over_shoulder_left", "over_shoulder_right", "overhead", "wrist_right", "wrist_left", "front"]
+
     obs_config = ObservationConfig()
     obs_config.set_all(True)
 
-    default_config_params = {"image_size": image_size, "depth_in_meters": False, "masks_as_one_channel": False}
+    default_config_params = {"image_size": image_size, "depth_in_meters": False, "masks_as_one_channel": vlm}
+
+
     camera_configs = {camera_name: CameraConfig(**default_config_params) for camera_name in camera_names}
     obs_config.camera_configs = camera_configs
 
-
+    #logging.info("Now we set the masks_as_one_channel as : %s ",default_config_params["masks_as_one_channel"]  )
+    #logging.info(f"Now we set the cameras as: {camera_names}")
+    
     # ..record date with BimanualJointPosition
     robot_setup = 'dual_panda'
+
+    # Add something here！ 
     rlbench_env = Environment(
         action_mode=BimanualMoveArmThenGripper(BimanualJointPosition(), BimanualDiscrete()),
         obs_config=obs_config,
         robot_setup=robot_setup,
-        headless=headless)
+        headless=headless,
+        vlm=vlm,
+        task_name = task_name)
 
     rlbench_env.launch()
 
     tasks_with_problems = ""
 
-    for task in tasks:
-        
-        task_env = rlbench_env.get_task(task)
-        possible_variations = task_env.variation_count()
-
+    for TaskClass in tasks:
+        is_special = (task_name == 'bimanual_transfer_item')
+        tmp_env = rlbench_env.get_task(TaskClass)
+        possible_variations = tmp_env.variation_count()
         logging.info("Task has %s possible variations", possible_variations)
 
-        variation_path = os.path.join(save_path, task_env.get_name(), VARIATIONS_ALL_FOLDER)
-        os.makedirs(variation_path, exist_ok=True)
+        variation_root = os.path.join(save_path, tmp_env.get_name(), VARIATIONS_ALL_FOLDER)
+        os.makedirs(variation_root, exist_ok=True)
 
-        episodes_path = os.path.join(variation_path, EPISODES_FOLDER)
-        os.makedirs(episodes_path, exist_ok=True)
-
+        episodes_root = os.path.join(variation_root, EPISODES_FOLDER)
+        os.makedirs(episodes_root, exist_ok=True)
 
         abort_variation = False
         for ex_idx in range(episodes_per_task):
@@ -132,42 +148,46 @@ def run_all_variations(task_name, headless, save_path, episodes_per_task, image_
             while attempts > 0:
                 try:
                     variation = np.random.randint(possible_variations)
+                    dominant_arg = None
+                    if is_special:
+                        mid = episodes_per_task // 2
+                        dominant_arg = 'left' if ex_idx < mid else 'right'
 
-                    task_env = rlbench_env.get_task(task)
-
+                    if dominant_arg is None:
+                        task_env = rlbench_env.get_task(TaskClass)
+                    else:
+                        print("the dominant is snow " , dominant_arg)
+                        task_env = rlbench_env.get_task(TaskClass, dominant=dominant_arg)
                     task_env.set_variation(variation)
                     descriptions, obs = task_env.reset()
 
-                    logging.info("// Task: %s Variation %s Demo %s", task_env.get_name(), variation, ex_idx)
+                    logging.info("// Task: %s Variation %s Demo %s",
+                                 task_env.get_name(), variation, ex_idx)
 
-                    # TODO: for now we do the explicit looping.
                     demo, = task_env.get_demos(amount=1, live_demos=True)
-                #  NoWaypointsError, DemoError,
-                except (BoundaryError, WaypointError, InvalidActionError, TaskEnvironmentError) as e:
+                    break
+                except (BoundaryError, WaypointError,
+                        InvalidActionError, TaskEnvironmentError) as e:
                     logging.warning("Exception %s", e)
                     attempts -= 1
                     if attempts > 0:
                         continue
                     problem = (
-                        'Failed collecting task %s (variation: %d, '
-                        'example: %d). Skipping this task/variation.\n%s\n' % (
-                            task_env.get_name(), variation, ex_idx,str(e))
+                        'Failed collecting task %s (variation: %d, example: %d).\n%s\n'
+                        % (task_env.get_name(), variation, ex_idx, str(e))
                     )
                     logging.error(problem)
                     tasks_with_problems += problem
                     abort_variation = True
                     break
 
-                episode_path = os.path.join(episodes_path, EPISODE_FOLDER % ex_idx)
-               
-                save_demo(demo, episode_path, variation)
-
-                with open(os.path.join( episode_path, VARIATION_DESCRIPTIONS), 'wb') as f:
-                    pickle.dump(descriptions, f)
-
-                break
             if abort_variation:
                 break
+
+            episode_path = os.path.join(episodes_root, EPISODE_FOLDER % ex_idx)
+            save_demo(demo, episode_path, variation, vlm, camera_names)
+            with open(os.path.join(episode_path, VARIATION_DESCRIPTIONS), 'wb') as f:
+                pickle.dump(descriptions, f)
 
     
     rlbench_env.shutdown()
@@ -191,7 +211,8 @@ def get_bimanual_tasks():
 @click.option("--headless/--no-headless", default=True, is_flag=True, help='Hide the simulator window')
 #@click.option("--color-robot/--no-color-robot", default=False, is_flag=True, help='Colorize')
 @choice_option('--image-size', type=click.Choice(["128x128", "256x256", "640x480"]), multiple=False, help='Select the image_size (width, height)')
-def main(save_path, tasks, episodes_per_task, all_variations, headless, image_size):
+@click.option('--vlm/--no-vlm', default=False, is_flag=True, help='cropping while using vlm')
+def main(save_path, tasks, episodes_per_task, all_variations, headless, image_size, vlm):
 
     # ..todo check if already exits
 
@@ -220,7 +241,7 @@ def main(save_path, tasks, episodes_per_task, all_variations, headless, image_si
 
     logging.debug("Selected tasks %s", tasks)
 
-    fn = partial(run_all_variations, headless=headless, save_path=save_path, episodes_per_task=episodes_per_task, image_size=image_size)
+    fn = partial(run_all_variations, headless=headless, save_path=save_path, episodes_per_task=episodes_per_task, image_size=image_size, vlm=vlm)
     with ctx.Pool(processes=4) as pool:
         pool.map(fn, tasks)
 

@@ -168,8 +168,6 @@ class BimanualJointPosition(ArmActionMode):
     def unimanual_action_shape(self, scene: Scene) -> tuple:
         return (7, )
 
-
-
 class JointPosition(ArmActionMode):
     """Control the target joint positions (absolute or delta) of the arm.
 
@@ -202,8 +200,6 @@ class JointPosition(ArmActionMode):
     def action_shape(self, scene: Scene) -> tuple:
         return SUPPORTED_ROBOTS[scene.robot_setup][2],
 
-
-
 class JointTorque(ArmActionMode):
     """Control the joint torques of the arm.
     """
@@ -226,7 +222,6 @@ class JointTorque(ArmActionMode):
 
     def action_shape(self, scene: Scene) -> tuple:
         return SUPPORTED_ROBOTS[scene.robot_setup][2],
-
 
 class EndEffectorPoseViaPlanning(ArmActionMode):
     """High-level action where target pose is given and reached via planning.
@@ -375,7 +370,6 @@ class EndEffectorPoseViaPlanning(ArmActionMode):
         return 7,
 
 
-
 class UnimanualEndEffectorPoseViaPlanning(EndEffectorPoseViaPlanning):
 
     def __init__(self,
@@ -472,7 +466,6 @@ class BimanualEndEffectorPoseViaPlanning(EndEffectorPoseViaPlanning):
     def unimanual_action_shape(self, scene: Scene) -> tuple:
         return 7,
 
-
 class EndEffectorPoseViaIK(ArmActionMode):
     """High-level action where target pose is given and reached via IK.
 
@@ -538,3 +531,34 @@ class EndEffectorPoseViaIK(ArmActionMode):
 
     def action_shape(self, scene: Scene) -> tuple:
         return 7,
+
+class SelectableUnimanualArmEndEffectorPoseViaPlanning(ArmActionMode):
+    """
+    管理左右两个 Unimanual 手臂控制器，并根据 'which_arm' 选择执行。
+    """
+    def __init__(self,
+                 absolute_mode: bool = True,
+                 frame: str = 'world',
+                 collision_checking: bool = False):
+        self.left_arm = UnimanualEndEffectorPoseViaPlanning(
+            absolute_mode=absolute_mode, frame=frame,
+            collision_checking=collision_checking, robot_name='left'
+        )
+        self.right_arm = UnimanualEndEffectorPoseViaPlanning(
+            absolute_mode=absolute_mode, frame=frame,
+            collision_checking=collision_checking, robot_name='right'
+        )
+
+    def action(self, scene: Scene, arm_action: np.ndarray,
+               ignore_collisions: bool = True, which_arm: str = 'left'):
+        """根据 which_arm 选择并执行手臂动作。"""
+        if which_arm == 'left':
+            self.left_arm.action(scene, arm_action, ignore_collisions)
+        elif which_arm == 'right':
+            self.right_arm.action(scene, arm_action, ignore_collisions)
+        else:
+            raise ValueError(f"Invalid 'which_arm': {which_arm}")
+
+    def action_shape(self, scene: Scene) -> tuple:
+        """返回单个手臂的动作形状。"""
+        return self.left_arm.action_shape(scene) # 7

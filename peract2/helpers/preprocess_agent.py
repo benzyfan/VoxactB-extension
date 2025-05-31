@@ -120,8 +120,9 @@ class PreprocessAgent(Agent):
                     ),
                 ]
             )
-        sums.extend(self._pose_agent.update_summaries())
-        return sums
+        summaries, wandb_dict = self._pose_agent.update_summaries()
+        sums.extend(summaries)
+        return sums, wandb_dict
 
     def act_summaries(self) -> List[Summary]:
         return self._pose_agent.act_summaries()

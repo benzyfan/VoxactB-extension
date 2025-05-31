@@ -12,7 +12,7 @@ from yarr.agents.agent import Agent
 supported_agents = {
     "leader_follower": ("PERACT_BC", "RVT"),
     "independent": ("PERACT_BC", "RVT"),
-    "bimanual": ("BIMANUAL_PERACT", "ACT_BC_LANG"),
+    "bimanual": ("BIMANUAL_PERACT", "ACT_BC_LANG", "VOXACTB"),
     "unimanual": (),
 }
 
@@ -106,6 +106,11 @@ def agent_fn_by_name(method_name: str) -> Agent:
         return act_bc_lang.launch_utils.create_agent
     elif method_name == "PERACT_RL":
         raise NotImplementedError("PERACT_RL not yet supported for eval.py")
+    
+    elif method_name == "VOXACTB":
+        from agents import voxactb
+        
+        return voxactb.launch_utils.create_agent
 
     else:
         raise ValueError("Method %s does not exists." % method_name)

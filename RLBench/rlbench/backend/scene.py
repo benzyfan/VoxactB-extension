@@ -1,4 +1,8 @@
 from typing import List, Callable
+import math
+import open3d as o3d
+import gc
+import traceback
 
 import numpy as np
 from pyrep import PyRep
@@ -18,11 +22,15 @@ from rlbench.backend.observation import UnimanualObservationData
 from rlbench.backend.observation import UnimanualObservation
 from rlbench.backend.observation import BimanualObservation
 
+from rlbench.backend.vlm import VLM
+from PIL import Image
+
 from rlbench.backend.robot import Robot
 from rlbench.backend.robot import UnimanualRobot
 from rlbench.backend.robot import BimanualRobot
 from rlbench.backend.spawn_boundary import SpawnBoundary
 from rlbench.backend.task import Task
+from rlbench.backend.task import DABimanualTask
 from rlbench.backend.utils import rgb_handles_to_mask
 from rlbench.demo import Demo
 from rlbench.noise_model import NoiseModel
@@ -42,13 +50,15 @@ class Scene(object):
                  pyrep: PyRep,
                  robot: Robot,
                  obs_config: ObservationConfig = ObservationConfig(),
-                 robot_setup: str = 'panda'):
+                 robot_setup: str = 'panda',
+                 vlm: bool = True):
         self.pyrep = pyrep
         self.robot = robot
         self.robot_setup = robot_setup
         self.task = None
         self._obs_config = obs_config
         self._initial_task_state = None
+        self._vlm = vlm
 
         if self.robot.is_bimanual:
             self._start_arm_joint_pos = [robot.right_arm.get_joint_positions(), robot.left_arm.get_joint_positions()]
@@ -103,6 +113,11 @@ class Scene(object):
             self._robot_shapes = self.robot.arm.get_objects_in_tree(
                 object_type=ObjectType.SHAPE)           
             self._execute_demo_joint_position_action = None
+        
+
+        #Use for voxactb method
+        self.target_object_pos = None
+        self.auto_crop_radius = 0.0
 
     def load(self, task: Task) -> None:
         """Loads the task and positions at the centre of the workspace.
@@ -119,6 +134,8 @@ class Scene(object):
         self._initial_task_pose = task.boundary_root().get_orientation()
         self._has_init_task = self._has_init_episode = False
         self._variation_index = 0
+        if self._vlm:
+            self.vlm = VLM()
 
     def unload(self) -> None:
         """Clears the scene. i.e. removes all tasks. """
@@ -129,9 +146,19 @@ class Scene(object):
             self.task.unload()
         self.task = None
         self._variation_index = 0
+        if self._vlm:
+            self.vlm = None
+            del self.vlm
+            gc.collect()
 
     def init_task(self) -> None:
         self.task.init_task()
+        self._initial_task_state = self.task.get_state()
+        self._has_init_task = True
+        self._variation_index = 0
+    
+    def init_task_dominant_assistive(self, dominant: str = 'right') -> None:
+        self.task.init_task(dominant)
         self._initial_task_state = self.task.get_state()
         self._has_init_task = True
         self._variation_index = 0
@@ -171,6 +198,13 @@ class Scene(object):
         [self.pyrep.step() for _ in range(STEPS_BEFORE_EPISODE_START)]
         self._has_init_episode = True
         return descriptions
+    
+    def init_episode_dominant_assistive(self, index: int, randomly_place: bool=True,
+                     max_attempts: int = 100, dominant: str = 'right') -> List[str]:
+        #Maybe we will use this in the following pipeline
+        print("Now we are at the scene.init_episode_dominant_assistive")
+        raise NotImplementedError
+        return 
 
     def reset(self) -> None:
         """Resets the joint angles. """
@@ -189,6 +223,9 @@ class Scene(object):
             self.task.restore_state(self._initial_task_state)
         self.task.set_initial_objects_in_scene()
 
+        self.target_object_pos = None
+        self.auto_crop_radius = 0.0
+
     def reset_unimanual(self) -> None:
         arm, gripper = self._initial_robot_state   
         self.pyrep.set_configuration_tree(arm)
@@ -197,7 +234,6 @@ class Scene(object):
         self.robot.arm.set_joint_positions(self._start_arm_joint_pos, disable_dynamics=True)
         self.robot.gripper.set_joint_positions(
             self._starting_gripper_joint_pos, disable_dynamics=True)
-
 
     def reset_bimanual(self) -> None:
 
@@ -210,7 +246,6 @@ class Scene(object):
 
         self.robot.left_arm.set_joint_positions(self._start_arm_joint_pos[1], disable_dynamics=True)
         self.robot.left_gripper.set_joint_positions(self._starting_gripper_joint_pos[1], disable_dynamics=True)
-
 
     def get_observation(self) -> Observation:
 
@@ -266,9 +301,6 @@ class Scene(object):
             perception_data.update({f'{camera_name}_rgb': rgb_data, f'{camera_name}_depth': depth_data, f'{camera_name}_point_cloud': pcd_data,
                                      f'{camera_name}_mask': mask_data})
     
-
-
-
         def get_proprioception(arm: Arm, gripper: Gripper):
             tip = arm.get_tip()
 
@@ -361,6 +393,235 @@ class Scene(object):
             "perception_data": perception_data,
             "misc": self._get_misc()
         })
+        if self.robot.is_bimanual:
+            obs = BimanualObservation(**observation_data)
+        else:
+            obs = UnimanualObservation(**observation_data)
+
+        obs.target_object_pos = None
+        obs.auto_crop_radius = None
+        
+        obs = self.task.decorate_observation(obs)
+
+        return obs
+
+    def get_observation_vlm(self) -> Observation:
+        #same copy from the origin get_observation, add the cropping info which can be used on th VoxactB
+        #For peract_bimanual cropping?
+        observation_data = {}
+        perception_data = {}
+        def get_rgb_depth(sensor: VisionSensor, get_rgb: bool, get_depth: bool,
+                          get_pcd: bool, rgb_noise: NoiseModel,
+                          depth_noise: NoiseModel, depth_in_meters: bool):
+            rgb = depth = pcd = None
+            if sensor is not None and (get_rgb or get_depth):
+                sensor.handle_explicitly()
+                if get_rgb:
+                    rgb = sensor.capture_rgb()
+                    if rgb_noise is not None:
+                        rgb = rgb_noise.apply(rgb)
+                    rgb = np.clip((rgb * 255.).astype(np.uint8), 0, 255)
+                if get_depth or get_pcd:
+                    depth = sensor.capture_depth(depth_in_meters)
+                    if depth_noise is not None:
+                        depth = depth_noise.apply(depth)
+                if get_pcd:
+                    depth_m = depth
+                    if not depth_in_meters:
+                        near = sensor.get_near_clipping_plane()
+                        far = sensor.get_far_clipping_plane()
+                        depth_m = near + depth * (far - near)
+                    pcd = sensor.pointcloud_from_depth(depth_m)
+                    if not get_depth:
+                        depth = None
+            return rgb, depth, pcd
+
+        def get_mask(sensor: VisionSensor, mask_fn):
+            mask = None
+            if sensor is not None:
+                sensor.handle_explicitly()
+                mask = mask_fn(sensor.capture_rgb())
+            return mask
+
+        for camera_name, camera_config in self._obs_config.camera_configs.items():            
+            rgb_data, depth_data, pcd_data = get_rgb_depth(self.camera_sensors[camera_name], camera_config.rgb, camera_config.depth, camera_config.point_cloud,
+            camera_config.rgb_noise, camera_config.depth_noise, camera_config.depth_in_meters)
+            if camera_config.mask and camera_config.masks_as_one_channel:
+                mask_data = get_mask(self.camera_sensors_mask[camera_name], rgb_handles_to_mask)
+            elif camera_config.mask:
+                mask_data = get_mask(self.camera_sensors_mask[camera_name], lambda x: x)
+            else:
+                mask_data = None
+            perception_data.update({f'{camera_name}_rgb': rgb_data, f'{camera_name}_depth': depth_data, f'{camera_name}_point_cloud': pcd_data,
+                                     f'{camera_name}_mask': mask_data})
+            
+        def get_proprioception(arm: Arm, gripper: Gripper):
+            tip = arm.get_tip()
+
+            if self._obs_config.joint_velocities:
+                joint_velocities=np.array(arm.get_joint_velocities())
+                joint_velocities=self._obs_config.joint_velocities_noise.apply(joint_velocities)
+            else:
+                joint_velocities=None
+
+            if self._obs_config.joint_positions:
+                joint_positions = np.array(arm.get_joint_positions())
+                joint_positions = self._obs_config.joint_positions_noise.apply(joint_positions)
+            else:
+                joint_positions = None
+            
+            if self._obs_config.joint_forces:
+                fs = arm.get_joint_forces()
+                vels = arm.get_joint_target_velocities()
+                joint_forces = np.array([-f if v < 0 else f for f, v in zip(fs, vels)])
+                joint_forces = self._obs_config.joint_forces_noise.apply(joint_forces)
+            else:
+                joint_forces=None
+
+            if self._obs_config.gripper_open:
+                if gripper.get_open_amount()[0] > 0.95:
+                    gripper_open = 1.0
+                else:
+                    gripper_open = 0.0
+            else:
+                gripper_open = None
+
+            if self._obs_config.gripper_pose:
+                gripper_pose = tip.get_pose()
+            else:
+                gripper_pose = None
+
+
+            if self._obs_config.gripper_matrix:
+                gripper_matrix = tip.get_matrix()
+            else:
+                gripper_matrix = None
+
+            if self._obs_config.gripper_touch_forces:
+                ee_forces = gripper.get_touch_sensor_forces()
+                ee_forces_flat = []
+                for eef in ee_forces:
+                    ee_forces_flat.extend(eef)
+                gripper_touch_forces = np.array(ee_forces_flat)
+            else:
+                gripper_touch_forces =  None
+
+
+            if self._obs_config.gripper_joint_positions:
+                gripper_joint_positions= np.array(gripper.get_joint_positions())
+            else:
+                gripper_joint_positions = None
+
+
+            if self._obs_config.record_ignore_collisions:
+                if self._ignore_collisions_for_current_waypoint:
+                    ignore_collisions = np.array(1.0)
+                else:
+                    ignore_collisions = np.array(0.0)
+            else:
+                ignore_collisions = None
+
+            return {"joint_velocities": joint_velocities, 
+            "joint_positions": joint_positions,
+            "joint_forces": joint_forces, 
+            "gripper_open": gripper_open,
+            "gripper_pose": gripper_pose,
+            "gripper_matrix": gripper_matrix,
+            "gripper_touch_forces": gripper_touch_forces,
+            "gripper_joint_positions": gripper_joint_positions, 
+            "ignore_collisions": ignore_collisions}
+
+
+        if self.robot.is_bimanual:
+            observation_data["right"] = UnimanualObservationData(**get_proprioception(self.robot.right_arm, self.robot.right_gripper))
+            observation_data["left"] = UnimanualObservationData(**get_proprioception(self.robot.left_arm, self.robot.left_gripper))
+        else:
+            observation_data.update(get_proprioception(self.robot.arm, self.robot.gripper))
+        
+        # follow the method in the scence_two_robots from voxactb
+        
+
+        if self.target_object_pos is None:
+            points = perception_data['front_point_cloud']
+            mask   = perception_data['front_mask']
+            # points = perception_data['overhead_point_cloud']
+            # mask = perception_data['overhead_mask']
+
+            if self.task.name in ['HandOverItem', 'hand_over_item']:
+                object_handle = Shape('cube').get_handle()
+                obj_points = points[np.isin(mask, object_handle)]
+                if len(obj_points) == 0:
+                    raise ValueError(f"Object {object_handle} not found in the scene")
+            # follwoing is just follow the Voxactb rule, is not useful here
+            elif self.task.name in ['OpenDrawer', 'open_drawer', 'PutItemInDrawer', 'put_item_in_drawer']:
+                object_handle = Shape('drawer_middle').get_handle()
+                obj_points = points[np.isin(mask, object_handle)]
+                if len(obj_points) == 0:
+                    raise ValueError(f"Object {object_handle} not found in the scene")
+            elif self.task.name in ['OpenJar', 'open_jar']:
+                object_handle = [Shape('jar_lid0').get_handle(), Shape('jar0').get_handle()]
+                obj_points = points[np.isin(mask, object_handle)]
+                if len(obj_points) == 0:
+                    raise ValueError(f"Object {object_handle} not found in the scene")
+            elif self.task.name in ['bimanual_handover_item_easy', 'BimanualHandoverItemEasy']:
+                object_handle = Shape('item').get_handle()
+                obj_points = points[np.isin(mask, object_handle)]
+                if len(obj_points) == 0:
+                    raise ValueError(f"Object {object_handle} not found in the scene")
+                
+            elif self.task.name in ['bimanual_transfer_item', 'BimanualTransferItem']:
+                object_handle = Shape('item').get_handle()
+                obj_points = points[np.isin(mask, object_handle)]
+                if len(obj_points) == 0:
+                    # try using another camera to generate the dataset 
+                    points = perception_data.get('overhead_point_cloud')
+                    mask   = perception_data.get('overhead_mask')
+                    logging.info("We can not found the item using the front camera! Vow using the overhead camera!")
+                    obj_points = points[np.isin(mask, object_handle)]
+                    if len(obj_points) == 0:
+                        raise ValueError(f"Overhead Camera also can not solve this! Object {object_handle} not found in the scene")
+            else:
+                raise NotImplementedError(f"Target object extraction not implemented for task: {self.task.name}")
+        
+            
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(obj_points)
+            pcd_downsampled = pcd.voxel_down_sample(voxel_size=0.001)
+            obj_points = np.asarray(pcd_downsampled.points)
+            self.target_object_pos = np.mean(obj_points, axis=0)
+            # print(f"DEBUG: Set target_object_pos = {self.target_object_pos}")
+
+
+        if self.auto_crop_radius == 0.0 and self.task.name in ['OpenDrawer', 'open_drawer', 'PutItemInDrawer', 'put_item_in_drawer']:
+            auto_crop_padding = 0.05
+            obj_frame_handle = Shape('drawer_frame').get_handle()
+            entire_obj_points = points[np.isin(mask, obj_frame_handle)]
+            obj_x_min = np.min(entire_obj_points[:, 0])
+            obj_x_max = np.max(entire_obj_points[:, 0])
+            obj_y_min = np.min(entire_obj_points[:, 1])
+            obj_y_max = np.max(entire_obj_points[:, 1])
+            obj_z_min = np.min(entire_obj_points[:, 2])
+            obj_z_max = np.max(entire_obj_points[:, 2])
+            obj_max_dim = np.max([obj_x_max - obj_x_min, obj_y_max - obj_y_min, obj_z_max - obj_z_min])
+            self.auto_crop_radius = obj_max_dim + auto_crop_padding
+            # print("Computed auto_crop_radius:", self.auto_crop_radius)
+
+    
+        task_low_dim_state = self.task.get_low_dim_state() if self._obs_config.task_low_dim_state else None
+
+        observation_data.update({
+            "target_object_pos": self.target_object_pos,
+            "auto_crop_radius": self.auto_crop_radius,
+            "task_low_dim_state": task_low_dim_state,
+            "perception_data": perception_data,
+            "misc": self._get_misc()
+        })
+
+        #debug
+        logging.debug(f"Setting target_object_pos: {self.target_object_pos}")
+
+        # if scene_bounds is not None:
+        #     observation_data["target_object_scene_bounds"] = scene_bounds
 
         if self.robot.is_bimanual:
             obs = BimanualObservation(**observation_data)
@@ -368,7 +629,7 @@ class Scene(object):
             obs = UnimanualObservation(**observation_data)
 
         obs = self.task.decorate_observation(obs)
-
+        
         return obs
 
     def step(self):
@@ -441,8 +702,7 @@ class Scene(object):
 
             if not self.task.should_repeat_waypoints() or success:
                 return success
-
-
+    
     def execute_waypoints_bimanual(self, do_record) -> bool:
         right_waypoints = self.task.right_waypoints
         left_waypoints = self.task.left_waypoints
@@ -543,6 +803,135 @@ class Scene(object):
             if not self.task.should_repeat_waypoints() or success:
                 return success
 
+    def execute_waypoints_dominant_assistive(self, do_record) -> bool:
+
+        #same as bimanual register
+        right_waypoints = self.task.right_waypoints
+        left_waypoints = self.task.left_waypoints
+        for i, right_point in enumerate(right_waypoints.copy()):
+            ext = right_point.get_ext()
+            if 'repeat' in ext:
+                j = ext.rsplit('_', maxsplit=1)
+                j = int(j[-1])
+                for _ in range(j):
+                    right_waypoints.insert(i, right_point)
+        for i, left_point in enumerate(left_waypoints.copy()):
+            ext = left_point.get_ext()
+            if 'repeat' in ext:
+                j = ext.rsplit('_', maxsplit=1)
+                j = int(j[-1])
+                for _ in range(j):
+                    left_waypoints.insert(i, left_point)
+
+            
+        processed_right_wps_after_repeat = right_waypoints
+        processed_left_wps_after_repeat = left_waypoints
+
+        dominant_arm_char = self.task._dominant
+
+        # if dominant_arm_char == None:
+        #     print("Error: There is no self.task._dominant")
+        # else: 
+        #     print("We have the dominant_arm_char as ", dominant_arm_char)
+
+        if dominant_arm_char == 'right':
+            num_rep = len(processed_left_wps_after_repeat)
+            print(num_rep)
+            element_to_prepend = processed_right_wps_after_repeat[0]
+            for i in range(num_rep):
+                processed_right_wps_after_repeat.insert(0, element_to_prepend) 
+        else: # dominant_arm_char == 'left' 
+            num_rep = len(processed_right_wps_after_repeat)
+            element_to_prepend = processed_left_wps_after_repeat[0]
+            for i in range(num_rep):
+                processed_left_wps_after_repeat.insert(0, element_to_prepend) 
+        
+
+        # use new waypoint as list 
+        right_waypoints = processed_right_wps_after_repeat
+        left_waypoints = processed_left_wps_after_repeat
+        
+        # logging.info(f"Final constructed waypoints for sequential execution. Right count: {len(right_waypoints)}, Left count: {len(left_waypoints)}")
+
+        while len(left_waypoints) > len(right_waypoints):
+            right_waypoints.append(right_waypoints[-1])
+
+        while len(right_waypoints) > len(left_waypoints):
+            left_waypoints.append(left_waypoints[-1])
+
+        
+        while True:
+            success = False
+            self._ignore_collisions_for_current_waypoint = False
+            # ..fixme:: some waypoints might be skipped due to zip -> add dummy waypoints
+            for i, (right_point, left_point) in enumerate(zip(right_waypoints, left_waypoints)):
+                self._ignore_collisions_for_current_waypoint = right_point._ignore_collisions or left_point._ignore_collisions
+                right_point.start_of_path()
+                left_point.start_of_path()
+                if right_point.skip or left_point.skip:
+                    print("skipping waypoints!")
+                    logging.error("skipping waypoints!")
+                    continue
+        
+                grasped_objects = self.robot.right_gripper.get_grasped_objects() + self.robot.left_gripper.get_grasped_objects()
+                colliding_shapes = []
+                for s in self.pyrep.get_objects_in_tree(object_type=ObjectType.SHAPE):
+                    if s in grasped_objects:
+                        continue
+                    #if s in self._robot_shapes:
+                    #    continue
+                    if not s.is_collidable():
+                        continue
+                    if self.robot.right_arm.check_arm_collision(s):
+                        colliding_shapes.append(s)
+                    elif self.robot.left_arm.check_arm_collision(s):
+                        colliding_shapes.append(s)
+                
+                logging.debug("got list of colliding objects: %s", ", ".join([s.get_name()  for s in colliding_shapes]))
+                
+                [s.set_collidable(False) for s in colliding_shapes]
+                try:
+                    right_path = right_point.get_path()
+                    left_path = left_point.get_path()
+                except ConfigurationPathError as e:
+                    logging.error("Unable to get path %s", e)
+                    raise DemoError(f'Could not get a path for waypoint {right_point.name} or {left_point.name}.', task=self.task) from e
+                finally:
+                    [s.set_collidable(True) for s in colliding_shapes]
+
+                right_ext = right_point.get_ext()
+                left_ext = left_point.get_ext()
+
+                right_path.visualize()
+                left_path.visualize()
+
+                right_done = False
+                left_done = False
+                success = False
+                while not (right_done and left_done):
+                    if not right_done and right_path.step():                
+                        right_point.end_of_path()
+                        right_path.clear_visualization()
+                        for ext in right_ext.split(";"):
+                            self._handle_extensions_strings(ext.strip(), do_record)
+                        right_done = True
+
+                    if not left_done and left_path.step():
+                        left_point.end_of_path()
+                        left_path.clear_visualization()
+                        for ext in left_ext.split(";"):
+                            self._handle_extensions_strings(ext.strip(), do_record)
+                        left_done = True
+
+                    self.step()
+                    self._right_execute_demo_joint_position_action = right_path.get_executed_joint_position_action()
+                    self._left_execute_demo_joint_position_action = left_path.get_executed_joint_position_action()
+                    do_record()
+                    success, term = self.task.success()
+
+            if not self.task.should_repeat_waypoints() or success:
+                return success
+    
 
     def get_demo(self, record: bool = True,
                  callable_each_step: Callable[[Observation], None] = None,
@@ -559,14 +948,20 @@ class Scene(object):
         demo = []
 
         def do_record():
-            self._demo_record_step(demo, record, callable_each_step)
+            self._demo_record_step(demo, record, callable_each_step, self._vlm)
+
 
         if record:
             self.pyrep.step()  # Need this here or get_force doesn't work...
-            demo.append(self.get_observation())
+            if self._vlm:
+                demo.append(self.get_observation_vlm())
+            else:
+                demo.append(self.get_observation())
 
         success = False
-        if self.robot.is_bimanual:
+        if self.robot.is_bimanual and isinstance(self.task, DABimanualTask) and self.task.use_dominant_assistive:
+            success = self.execute_waypoints_dominant_assistive(do_record)
+        elif self.robot.is_bimanual:
             success = self.execute_waypoints_bimanual(do_record)
         else:
             success = self.execute_waypoints_unimanual(do_record)
@@ -649,11 +1044,17 @@ class Scene(object):
                 self._workspace_maxy > y > self._workspace_miny and
                 self._workspace_maxz > z > self._workspace_minz)
 
-    def _demo_record_step(self, demo_list, record, func):
+    def _demo_record_step(self, demo_list, record, func, vlm):
         if record:
-            demo_list.append(self.get_observation())
+            if vlm:
+                demo_list.append(self.get_observation_vlm())
+            else:
+                demo_list.append(self.get_observation())
         if func is not None:
-            func(self.get_observation())
+            if vlm:
+                demo_list.append(self.get_observation_vlm())
+            else:
+                demo_list.append(self.get_observation())
 
     def _set_camera_properties(self) -> None:
         def _set_rgb_props(rgb_cam: VisionSensor,

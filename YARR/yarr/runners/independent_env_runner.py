@@ -37,12 +37,26 @@ class IndependentEnvRunner(EnvRunner):
                  max_fails: int = 10,
                  num_eval_runs: int = 1,
                  env_device: torch.device = None,
-                 multi_task: bool = False):
+                 multi_task: bool = False,
+                 #Add from VoxactB
+                 train_cfg = None,
+                 left_arm_agent = None,
+                 left_arm_ckpt = None,
+                 which_arm = None,
+                 voxposer_only_eval = False,
+                 no_voxposer = False,
+                 no_acting_stabilizing = False,
+                 baseline_name = '',
+                 gt_target_object_world_coords = False,
+                 kwargs:dict = None):
             super().__init__(train_env, agent, train_replay_buffer, num_train_envs, num_eval_envs,
                             rollout_episodes, eval_episodes, training_iterations, eval_from_eps_number,
                             episode_length, eval_env, eval_replay_buffer, stat_accumulator,
                             rollout_generator, weightsdir, logdir, max_fails, num_eval_runs,
-                            env_device, multi_task)
+                            env_device, multi_task, train_cfg, left_arm_agent, left_arm_ckpt, 
+                            which_arm, voxposer_only_eval, no_voxposer, no_acting_stabilizing, 
+                            baseline_name, gt_target_object_world_coords, kwargs)
+            print("Now in the yarr.independent_env_runner")
 
     def summaries(self) -> List[Summary]:
         summaries = []
@@ -77,7 +91,11 @@ class IndependentEnvRunner(EnvRunner):
               env_config,
               device_idx,
               save_metrics,
-              cinematic_recorder_cfg):
+              cinematic_recorder_cfg,
+              left_arm_ckpt = None):
+        if left_arm_ckpt is not None:
+            # overwrite _left_arm_ckpt with current left_arm_ckpt
+            self._left_arm_ckpt = left_arm_ckpt
 
         if hasattr(self, "_on_thread_start"):
             self._on_thread_start()
@@ -105,7 +123,11 @@ class IndependentEnvRunner(EnvRunner):
                 headless=env_config[5],
                 include_lang_goal_in_obs=env_config[6],
                 time_in_state=env_config[7],
-                record_every_n=env_config[8])
+                record_every_n=env_config[8],
+                # Added from VoxactB
+                train_cfg=self._train_cfg,
+                voxposer_only_eval=self._voxposer_only_eval,
+                eval_which_arm=self._which_arm)
 
         self._internal_env_runner = _IndependentEnvRunner(
             self._train_env, eval_env, self._agent, self._timesteps, self._train_envs,
@@ -117,7 +139,18 @@ class IndependentEnvRunner(EnvRunner):
             self.current_replay_ratio, self.target_replay_ratio,
             self._weightsdir, self._logdir,
             self._env_device, self._previous_loaded_weight_folder,
-            num_eval_runs=self._num_eval_runs)
+            num_eval_runs=self._num_eval_runs,
+            left_arm_agent=self._left_arm_agent, 
+            left_arm_ckpt=self._left_arm_ckpt,
+            which_arm=self._which_arm,
+            crop_target_obj_voxel=self._crop_target_obj_voxel,
+            crop_radius=self._crop_radius,
+            voxposer_only_eval=self._voxposer_only_eval,
+            no_voxposer=self._no_voxposer,
+            no_acting_stabilizing=self._no_acting_stabilizing,
+            baseline_name=self._baseline_name,
+            gt_target_object_world_coords=self._gt_target_object_world_coords,
+            kwargs=self._kwargs)
 
         stat_accumulator = SimpleAccumulator(eval_video_fps=30)
         self._internal_env_runner._run_eval_independent('eval_env',

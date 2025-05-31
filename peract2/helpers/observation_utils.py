@@ -112,6 +112,8 @@ def extract_obs_bimanual(
     episode_length: int = 10,
     robot_name: str = "",
 ):
+    
+    print("Now we are in this helpers.observation_utils.extract_obs_bimanual ")
     obs.right.joint_velocities = None
     right_grip_mat = obs.right.gripper_matrix
     right_grip_pose = obs.right.gripper_pose
@@ -231,6 +233,42 @@ def create_obs_config(
         point_cloud=True,
         mask=False,
         depth=False,
+        image_size=camera_resolution,
+        render_mode=RenderMode.OPENGL,
+    )
+
+    camera_configs = {camera_name: used_cams for camera_name in camera_names}
+
+    # Some of these obs are only used for keypoint detection.
+    obs_config = ObservationConfig(
+        camera_configs=camera_configs,
+        joint_forces=False,
+        joint_positions=True,
+        joint_velocities=True,
+        task_low_dim_state=False,
+        gripper_touch_forces=False,
+        gripper_pose=True,
+        gripper_open=True,
+        gripper_matrix=True,
+        gripper_joint_positions=True,
+        robot_name=robot_name,
+    )
+    return obs_config
+
+
+def create_obs_config_voxposer(
+    camera_names: List[str],
+    camera_resolution: List[int],
+    method_name: str,
+    robot_name: str = "bimanual",
+):
+    unused_cams = CameraConfig()
+    unused_cams.set_all(False)
+    used_cams = CameraConfig(
+        rgb=True,
+        point_cloud=True,
+        mask=True,
+        depth=True,
         image_size=camera_resolution,
         render_mode=RenderMode.OPENGL,
     )

@@ -43,7 +43,19 @@ class EnvRunner(object):
                  max_fails: int = 10,
                  num_eval_runs: int = 1,
                  env_device: torch.device = None,
-                 multi_task: bool = False):
+                 multi_task: bool = False,
+                 #Added from VoxactB 
+                 train_cfg = None,
+                 left_arm_agent = None,
+                 left_arm_ckpt = None,
+                 which_arm = None,
+                 voxposer_only_eval = False,
+                 no_voxposer = False,
+                 no_acting_stabilizing = False,
+                 baseline_name = '',
+                 gt_target_object_world_coords = False,
+                 kwargs = None
+                 ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
         self._agent = agent
@@ -84,6 +96,34 @@ class EnvRunner(object):
         self.current_replay_ratio = Value('f', -1)
         self._current_task_id = -1
         self._multi_task = multi_task
+        #VoxactB
+        if left_arm_agent is not None:
+            self._train_cfg = train_cfg
+            self._left_arm_agent = left_arm_agent
+            self._left_arm_ckpt = left_arm_ckpt
+            self._which_arm = which_arm
+            self._crop_target_obj_voxel = train_cfg.method.crop_target_obj_voxel
+            self._crop_radius = train_cfg.method.crop_radius
+            self._voxposer_only_eval = voxposer_only_eval
+            self._no_voxposer = no_voxposer
+            self._no_acting_stabilizing = no_acting_stabilizing
+            self._baseline_name = baseline_name
+            self._gt_target_object_world_coords = gt_target_object_world_coords
+            self._kwargs = kwargs
+        else:
+            self._train_cfg = train_cfg
+            self._left_arm_agent = None
+            self._left_arm_ckpt = None
+            self._which_arm = None
+            self._crop_target_obj_voxel = None
+            self._crop_radius = None
+            self._voxposer_only_eval = None
+            self._no_voxposer = None
+            self._no_acting_stabilizing = None
+            self._baseline_name = None
+            self._gt_target_object_world_coords = None
+            self._kwargs = None
+
 
     def summaries(self) -> List[Summary]:
         summaries = []
@@ -159,7 +199,12 @@ class EnvRunner(object):
             self.current_replay_ratio, self.target_replay_ratio,
             self._weightsdir, self._logdir,
             self._env_device, self._previous_loaded_weight_folder,
-            num_eval_runs=self._num_eval_runs)
+            num_eval_runs=self._num_eval_runs,
+            #Added from VoxactB
+            left_arm_agent=self._left_arm_agent,
+            left_arm_ckpt=self._left_arm_ckpt)
+        
+        
         training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
         eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)
         envs = training_envs + eval_envs

@@ -1,0 +1,93 @@
+method:
+  name: ACT_BC_LANG
+  robot_name: bimanual
+  agent_type: bimanual
+  train_demo_path: /home/markus/rlbench_data_v2_128/train/
+  activation: lrelu
+  lr: 0.0001
+  weight_decay: 1.0e-06
+  grad_clip: 0.1
+  demo_augmentation: true
+  demo_augmentation_every_n: 10
+  prev_action_horizon: 1
+  next_action_horizon: 10
+  lr_backbone: 1.0e-05
+  backbone: resnet18
+  dilation: false
+  position_embedding: sine
+  kl_weight: 100
+  chunk_size: ${method.next_action_horizon}
+  input_dim: 16
+  enc_layers: 4
+  dec_layers: 7
+  dim_feedforward: 3200
+  hidden_dim: 512
+  dropout: 0.1
+  nheads: 8
+  num_queries: ${method.next_action_horizon}
+  pre_norm: false
+  masks: false
+  camera_names: ${rlbench.cameras}
+  +rlbench.episode_length: 400
+  +rlbench.arm_action_mode: JointPosition
+  +rlbench.action_mode: JointPositionActionMode
+  which_arm: null
+  variant: two_policies
+  crop_target_obj_voxel: false
+  crop_radius: 0.0
+  voxposer_only_eval: false
+  no_voxposer: false
+  no_acting_stabilizing: false
+  gt_target_object_world_coords: false
+  baseline_name: ''
+  diff_appearance: false
+rlbench:
+  task_name: 2025_05_29_07_45_bimanual_transfer_item_100_baseline_front_0
+  tasks:
+  - bimanual_transfer_item
+  demo_path: /project2/seita_1561/data/val/
+  episode_length: 400
+  cameras:
+  - wrist_right
+  - wrist_left
+  - front
+  camera_resolution:
+  - 128
+  - 128
+  scene_bounds:
+  - -0.3
+  - -0.5
+  - 0.6
+  - 0.7
+  - 0.5
+  - 1.6
+  include_lang_goal_in_obs: true
+  time_in_state: true
+  headless: true
+  gripper_mode: BimanualGripperJointPosition
+  arm_action_mode: BimanualJointPosition
+  action_mode: BimanualJointPositionActionMode
+framework:
+  tensorboard_logging: true
+  csv_logging: true
+  gpu: 0
+  logdir: /project2/seita_1561/peract_logs
+  start_seed: 0
+  record_every_n: 5
+  eval_envs: 1
+  eval_from_eps_number: 0
+  eval_episodes: 25
+  eval_type: missing
+  eval_save_metrics: true
+  left_arm_ckpt: null
+  left_arm_ckpt_skip: null
+  left_arm_train_cfg: null
+  act_arm_ckpt_skip: null
+cinematic_recorder:
+  enabled: false
+  camera_resolution:
+  - 1280
+  - 720
+  fps: 30
+  rotate_speed: 0.005
+  save_path: /tmp/videos/

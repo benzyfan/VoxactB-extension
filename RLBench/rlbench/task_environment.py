@@ -32,8 +32,8 @@ class TaskEnvironment(object):
                  obs_config: ObservationConfig,
                  static_positions: bool = False,
                  attach_grasped_objects: bool = True,
-                 shaped_rewards: bool = False
-                 ):
+                 shaped_rewards: bool = False,
+                 dominant: str = None):
         self._pyrep = pyrep
         self._robot = robot
         self._scene = scene
@@ -48,6 +48,8 @@ class TaskEnvironment(object):
         self._reset_called = False
         self._prev_ee_velocity = None
         self._enable_path_observations = False
+        self._dominant = dominant
+        print("in task_environment, we have self._dominant is ", self._dominant)
 
         self._scene.load(self._task)
         self._pyrep.start()
@@ -80,6 +82,11 @@ class TaskEnvironment(object):
 
     def reset(self) -> (List[str], Observation):
         self._scene.reset()
+        from rlbench.backend.task import DABimanualTask
+        if isinstance(self._task, DABimanualTask) and self._dominant:
+            # logging.info(f"[ENV RESET] injecting dominant={self._dominant} into task")
+            # 直接给 task._dominant 赋值
+            self._task._dominant = self._dominant
         try:
             desc = self._scene.init_episode(
                 self._variation_number, max_attempts=_MAX_RESET_ATTEMPTS,
@@ -90,7 +97,6 @@ class TaskEnvironment(object):
                 'Could not place the task %s in the scene. This should not '
                 'happen, please raise an issues on this task.'
                 % self._task.get_name()) from e
-
         self._reset_called = True
         # Returns a list of descriptions and the first observation
         return desc, self._scene.get_observation()

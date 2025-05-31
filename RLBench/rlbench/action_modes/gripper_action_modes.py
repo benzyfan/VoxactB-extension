@@ -353,3 +353,33 @@ class BimanualDiscrete(Discrete):
         Returns: Returns the min and max of the action.
         """
         return np.array([0]), np.array([0.04])
+
+
+class SelectableUnimanualDiscrete(GripperActionMode):
+    """
+    管理左右两个 Unimanual 夹爪控制器，并根据 'which_arm' 选择执行。
+    """
+    def __init__(self,
+                 attach_grasped_objects: bool = True,
+                 detach_before_open: bool = True):
+        self.left_gripper = UnimanualDiscrete(
+            attach_grasped_objects=attach_grasped_objects,
+            detach_before_open=detach_before_open, robot_name='left'
+        )
+        self.right_gripper = UnimanualDiscrete(
+            attach_grasped_objects=attach_grasped_objects,
+            detach_before_open=detach_before_open, robot_name='right'
+        )
+
+    def action(self, scene: Scene, ee_action: np.ndarray, which_arm: str = 'left'):
+        """根据 which_arm 选择并执行夹爪动作。"""
+        if which_arm == 'left':
+            self.left_gripper.action(scene, ee_action)
+        elif which_arm == 'right':
+            self.right_gripper.action(scene, ee_action)
+        else:
+            raise ValueError(f"Invalid 'which_arm': {which_arm}")
+
+    def action_shape(self, scene: Scene) -> tuple:
+        """返回单个夹爪的动作形状。"""
+        return self.left_gripper.action_shape(scene) # 1

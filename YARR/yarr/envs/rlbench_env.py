@@ -10,7 +10,7 @@ except (ModuleNotFoundError, ImportError) as e:
 from rlbench.action_modes.action_mode import ActionMode
 from rlbench.backend.observation import BimanualObservation, Observation
 from rlbench.backend.task import Task
-from rlbench.backend.task import BimanualTask
+from rlbench.backend.task import BimanualTask,DABimanualTask
 
 from helpers.clip.core.clip import tokenize
 
@@ -19,8 +19,15 @@ from yarr.utils.observation_type import ObservationElement
 from yarr.utils.transition import Transition
 from yarr.utils.process_str import change_case
 
-import logging
+# VoxPoser imports
+# import openai
+# from voxposer.envs.rlbench_env import VoxPoserRLBench2Robots
+# from voxposer.visualizers import ValueMapVisualizer
+# from voxposer.arguments import get_config
+# from voxposer.interfaces import setup_LMP
+# from rlbench import tasks
 
+import logging
 
 ROBOT_STATE_KEYS = ['joint_velocities', 'joint_positions', 'joint_forces',
                         'gripper_open', 'gripper_pose',
@@ -62,7 +69,9 @@ def _extract_obs_bimanual(obs: BimanualObservation, channels_last: bool, observa
 
     for (k, v) in [(k, v) for k, v in obs_dict.items() if 'point_cloud' in k]:
         # ..TODO:: 
-        obs_dict[k] = v.astype(np.float16)
+        # obs_dict[k] = v.astype(np.float16)
+        # VoxactB using float32 for point cloud
+        obs_dict[k] = v.astype(np.float32)
 
     for camera_name, config in observation_config.camera_configs.items():
         if config.point_cloud:
@@ -149,6 +158,8 @@ def _observation_elements(observation_config, channels_last) -> List[Observation
         robot_state_len += 2
     if observation_config.task_low_dim_state:
         raise NotImplementedError()
+    
+    #Here, we use the robot_name instead of which_arm to set, may be will cause problem! 
     if robot_state_len > 0:
         if observation_config.robot_name == 'bimanual':
             elements.append(ObservationElement(
@@ -176,23 +187,94 @@ class RLBenchEnv(Env):
                  dataset_root: str = '',
                  channels_last=False,
                  headless=True,
-                 include_lang_goal_in_obs=False):
+                 include_lang_goal_in_obs=False,
+                 # Added for VoxactB
+                 train_cfg=None,
+                 voxposer_only_eval=False,
+                 eval_which_arm='',
+                 custom_ttt_file=''):
+        
         super(RLBenchEnv, self).__init__()
         self._task_class = task_class
         self._observation_config = observation_config
         self._channels_last = channels_last
         self._include_lang_goal_in_obs = include_lang_goal_in_obs
+        if eval_which_arm is not None:
+            self._crop_target_obj_voxel = train_cfg.method.crop_target_obj_voxel
+            self._voxposer_only_eval = voxposer_only_eval
+            self._eval_which_arm = eval_which_arm
+        else:
+            self._crop_target_obj_voxel = None
+            self._voxposer_only_eval = None
+            self._eval_which_arm = None
+        if  self._crop_target_obj_voxel is not None and  train_cfg.method.which_arm in ['dominant', 'assistive'] or voxposer_only_eval or self._eval_which_arm == 'dominant_assistive':
+            self.dominant_assitive_policy = True
+        else:
+            self.dominant_assitive_policy = False
+
+        
         if issubclass(task_class, BimanualTask):
+            robot_setup = "dual_panda"  # TODO: check if this is correct
+        elif issubclass(task_class, DABimanualTask):
             robot_setup = "dual_panda"
         else:
             robot_setup = "panda"
-        self._rlbench_env = Environment(
-            action_mode=action_mode, obs_config=observation_config,
-            dataset_root=dataset_root, headless=headless, robot_setup=robot_setup)
+
+        if  self._crop_target_obj_voxel is not None :
+            if train_cfg.method.crop_target_obj_voxel or voxposer_only_eval or self.dominant_assitive_policy:
+                ############## VoxPoser + PerAct ##############
+                # setup
+                openai.api_key = 'REPLACE-MET'  # set your API key here
+                voxposer_config = ''
+                if self._voxposer_only_eval:
+                    print("Now in yarr/envs/rlbench_env.py, voxposer_only_eval is True, which should not happen!! ")
+                    voxposer_config = '../../../../voxposer/configs/voxposer_only_config.yaml'
+                else:
+                    voxposer_config = '../../../../voxposer/configs/rlbench_config.yaml'
+                print('VoxPoser config: ', voxposer_config)
+                self.voxposer_config = get_config('rlbench', voxposer_config)
+                self.voxposer_cache_dir = '../../../../voxposer/cache'
+                # uncomment this if you'd like to change the language model (e.g., for faster speed or lower cost)
+                for lmp_name, cfg in self.voxposer_config['lmp_config']['lmps'].items():
+                    cfg['model'] = 'gpt-3.5-turbo'
+                    # cfg['model'] = 'gpt-4' # very expensive...
+
+                # initialize env and voxposer ui
+                visualizer = ValueMapVisualizer(self.voxposer_config['visualizer'])
+                print("Now in yarr/envs/rlbench_env.py,VoxPoserRLBench2Robots have not made a transfer !!!  ")
+                self._rlbench_env = VoxPoserRLBench2Robots(
+                    visualizer=visualizer, 
+                    observation_config=observation_config,
+                    dataset_root=dataset_root, 
+                    headless=headless, 
+                    task_name=task_class.__name__, 
+                    dominant_assitive_policy=self.dominant_assitive_policy, 
+                    custom_ttt_file=custom_ttt_file)
+                self.lmps, self.lmp_env = setup_LMP(
+                    self._rlbench_env, 
+                    self.voxposer_config, 
+                    debug=False, 
+                    cache_dir=self.voxposer_cache_dir, 
+                    voxposer_only_eval=self._voxposer_only_eval)
+                self.voxposer_ui = self.lmps['plan_ui']
+
+        else:
+            self._rlbench_env = Environment(
+                action_mode=action_mode,
+                obs_config=observation_config,
+                dataset_root=dataset_root,
+                headless=headless,
+                robot_setup=robot_setup,
+                task_name=task_class.__name__)
         self._task = None
         self._lang_goal = 'unknown goal'
 
+    # Added for VoxactB
+    def reload_voxposer_variables(self):
+        self.lmps, self.lmp_env = setup_LMP(self._rlbench_env, self.voxposer_config, debug=False, cache_dir=self.voxposer_cache_dir)
+        self.voxposer_ui = self.lmps['plan_ui']
 
+    
     def extract_obs(self, obs: Observation):
         if isinstance(obs, BimanualObservation):
             extracted_obs = _extract_obs_bimanual(obs, self._channels_last, self._observation_config)
@@ -203,11 +285,23 @@ class RLBenchEnv(Env):
         return extracted_obs
 
     def launch(self):
-        self._rlbench_env.launch()
-        self._task = self._rlbench_env.get_task(self._task_class)
+        if self._crop_target_obj_voxel or self._voxposer_only_eval or self.dominant_assitive_policy:
+            # already called launch when VoxPoserRLBench2Robots is instantitated
+            self._task = self._rlbench_env.task
+        else:
+            # Original RLBench launch pipeline 
+            self._rlbench_env.launch()
+            self._task = self._rlbench_env.get_task(self._task_class)
 
     def shutdown(self):
-        self._rlbench_env.shutdown()
+        if self._crop_target_obj_voxel or self._voxposer_only_eval or self.dominant_assitive_policy:
+            self._rlbench_env.rlbench_env.shutdown()
+            self._rlbench_env = None
+            self.lmps = None
+            self.lmp_env = None
+            self.voxposer_ui = None
+        else:
+            self._rlbench_env.shutdown()
 
     def reset(self) -> dict:
         descriptions, obs = self._task.reset()

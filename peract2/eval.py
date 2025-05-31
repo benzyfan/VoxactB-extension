@@ -14,7 +14,7 @@ from rlbench.action_modes.action_mode import BimanualMoveArmThenGripper
 from rlbench.action_modes.action_mode import BimanualJointPositionActionMode
 from rlbench.action_modes.arm_action_modes import BimanualEndEffectorPoseViaPlanning
 from rlbench.action_modes.arm_action_modes import BimanualJointPosition, JointPosition
-from rlbench.action_modes.gripper_action_modes import BimanualDiscrete
+from rlbench.action_modes.gripper_action_modes import BimanualDiscrete, BimanualGripperJointPosition
 from rlbench.action_modes.action_mode import MoveArmThenGripper
 from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaPlanning
 from rlbench.action_modes.gripper_action_modes import Discrete
@@ -31,14 +31,22 @@ from yarr.utils.rollout_generator import RolloutGenerator
 import torch.multiprocessing as mp
 
 from agents import agent_factory
+from agents import voxactb
 
 
 def eval_seed(
-    train_cfg, eval_cfg, logdir, env_device, multi_task, seed, env_config
+    train_cfg, eval_cfg, logdir, env_device, multi_task, seed, env_config,
+    left_arm_train_cfg,
+    left_arm_ckpt
 ) -> None:
-    tasks = eval_cfg.rlbench.tasks
-    rg = RolloutGenerator()
+    
 
+    tasks = eval_cfg.rlbench.tasks
+    # RolloutGenerator havn't change into VoxactB's method !!!! 
+    print("Now in eval.eval_seed function")
+    rg = RolloutGenerator()
+    
+    # Add a bimanual robot here 
     train_cfg.method.robot_name = eval_cfg.method.robot_name
 
     agent = agent_factory.create_agent(train_cfg)
@@ -47,25 +55,99 @@ def eval_seed(
     cwd = os.getcwd()
     weightsdir = os.path.join(logdir, "weights")
 
-    env_runner = IndependentEnvRunner(
-        train_env=None,
-        agent=agent,
-        train_replay_buffer=None,
-        num_train_envs=0,
-        num_eval_envs=eval_cfg.framework.eval_envs,
-        rollout_episodes=99999,
-        eval_episodes=eval_cfg.framework.eval_episodes,
-        training_iterations=train_cfg.framework.training_iterations,
-        eval_from_eps_number=eval_cfg.framework.eval_from_eps_number,
-        episode_length=eval_cfg.rlbench.episode_length,
-        stat_accumulator=stat_accum,
-        weightsdir=weightsdir,
-        logdir=logdir,
-        env_device=env_device,
-        rollout_generator=rg,
-        num_eval_runs=len(tasks),
-        multi_task=multi_task,
-    )
+    if left_arm_train_cfg is not None:
+        print("Now in the eval and see the left_arm_train_cfg, loaded it")
+        left_arm_agent = voxactb.launch_utils.create_agent(left_arm_train_cfg)
+    else:
+        left_arm_agent = None
+
+    if hasattr(train_cfg.method, 'crop_radius') and \
+        not isinstance(train_cfg.method.crop_radius, float) and \
+            train_cfg.method.crop_radius != 'auto':
+        task_index = train_cfg.rlbench.tasks.index(tasks[0])
+        train_cfg.method.crop_radius = train_cfg.method.crop_radius[task_index]
+
+        if eval_cfg.method.crop_radius == 'auto':
+            print('Crop radius: auto')
+            train_cfg.method.crop_radius = 'auto'
+
+
+        kwargs = {
+            'train_cfg': train_cfg,
+            'eval_cfg': eval_cfg,
+            'env_config': env_config,
+        }
+        env_runner = IndependentEnvRunner(
+            train_env=None,
+            agent=agent,
+            train_replay_buffer=None,
+            num_train_envs=0,
+            num_eval_envs=eval_cfg.framework.eval_envs,
+            rollout_episodes=99999,
+            eval_episodes=eval_cfg.framework.eval_episodes,
+            training_iterations=train_cfg.framework.training_iterations,
+            eval_from_eps_number=eval_cfg.framework.eval_from_eps_number,
+            episode_length=eval_cfg.rlbench.episode_length,
+            stat_accumulator=stat_accum,
+            weightsdir=weightsdir,
+            logdir=logdir,
+            env_device=env_device,
+            rollout_generator=rg,
+            num_eval_runs=len(tasks),
+            multi_task=multi_task,
+            train_cfg=train_cfg,
+            left_arm_agent=left_arm_agent,
+            left_arm_ckpt=left_arm_ckpt,
+            # always dominant_assistive
+            which_arm=eval_cfg.method.which_arm,
+            # method.voxposer_only_eval is always false
+            voxposer_only_eval=eval_cfg.method.voxposer_only_eval,
+            # method.no_voxposer is always true
+            no_voxposer=eval_cfg.method.no_voxposer,
+            # no_acting_stabilizing is always False
+            no_acting_stabilizing=eval_cfg.method.no_acting_stabilizing,
+            # baseline_name: ''
+            baseline_name=eval_cfg.method.baseline_name,
+            # gt_target_object_world_coords always False
+            gt_target_object_world_coords=eval_cfg.method.gt_target_object_world_coords,
+            kwargs=kwargs
+        )
+    else:
+        env_runner = IndependentEnvRunner(
+            train_env=None,
+            agent=agent,
+            train_replay_buffer=None,
+            num_train_envs=0,
+            num_eval_envs=eval_cfg.framework.eval_envs,
+            rollout_episodes=99999,
+            eval_episodes=eval_cfg.framework.eval_episodes,
+            training_iterations=train_cfg.framework.training_iterations,
+            eval_from_eps_number=eval_cfg.framework.eval_from_eps_number,
+            episode_length=eval_cfg.rlbench.episode_length,
+            stat_accumulator=stat_accum,
+            weightsdir=weightsdir,
+            logdir=logdir,
+            env_device=env_device,
+            rollout_generator=rg,
+            num_eval_runs=len(tasks),
+            multi_task=multi_task,
+            train_cfg=train_cfg,
+            left_arm_agent=None,
+            left_arm_ckpt=None,
+            # always dominant_assistive
+            which_arm=None,
+            # method.voxposer_only_eval is always false
+            voxposer_only_eval=None,
+            # method.no_voxposer is always true
+            no_voxposer=None,
+            # no_acting_stabilizing is always False
+            no_acting_stabilizing=None,
+            # baseline_name: ''
+            baseline_name=None,
+            # gt_target_object_world_coords always False
+            gt_target_object_world_coords=None,
+            kwargs=None
+        )
 
     env_runner._on_thread_start = peract_config.config_logging
 
@@ -149,26 +231,62 @@ def eval_seed(
 
     # evaluate several checkpoints in parallel
     # NOTE: in multi-task settings, each task is evaluated serially, which makes everything slow!
-    split_n = utils.split_list(weight_folders, eval_cfg.framework.eval_envs)
-    for split in split_n:
-        processes = []
-        for e_idx, weight in enumerate(split):
-            p = mp.Process(
-                target=env_runner.start,
-                args=(
-                    weight,
-                    save_load_lock,
-                    writer_lock,
-                    env_config,
-                    e_idx % torch.cuda.device_count(),
-                    eval_cfg.framework.eval_save_metrics,
-                    eval_cfg.cinematic_recorder,
-                ),
-            )
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
+
+    left_arm_ckpt = None
+    if eval_cfg.framework.left_arm_ckpt is not None and '.pt' not in eval_cfg.framework.left_arm_ckpt and type(eval_cfg.framework.eval_type) == int:
+        # this happens when we want to find the best checkpoint for the left arm, and we've already found the best checkpoint for the right arm
+        weight_folders_left = os.listdir(eval_cfg.framework.left_arm_ckpt)
+        weight_folders_left = sorted(map(int, weight_folders_left))
+        if eval_cfg.framework.left_arm_ckpt_skip is not None:
+            # skip the every checkpoint before left_arm_ckpt_skip
+            index_to_skip = 1
+            for weight_num in weight_folders_left:
+                if weight_num == eval_cfg.framework.left_arm_ckpt_skip:
+                    break
+                index_to_skip += 1
+            weight_folders_left = weight_folders_left[index_to_skip:]
+
+        split_n = utils.split_list(weight_folders_left, eval_cfg.framework.eval_envs)
+        weight_right = weight_folders[0]
+        for split in split_n:
+            processes = []
+            for e_idx, weight_idx in enumerate(split):
+                left_arm_ckpt = os.path.join(eval_cfg.framework.left_arm_ckpt, str(weight_idx), 'QAttentionAgent_layer0.pt')
+                p = mp.Process(target=env_runner.start,
+                                args=(weight_right,
+                                save_load_lock,
+                                writer_lock,
+                                env_config,
+                                e_idx % torch.cuda.device_count(),
+                                eval_cfg.framework.eval_save_metrics,
+                                eval_cfg.cinematic_recorder,
+                                left_arm_ckpt))
+                p.start()
+                processes.append(p)
+            for p in processes:
+                p.join()
+    else:
+        # origin code from peract2
+        split_n = utils.split_list(weight_folders, eval_cfg.framework.eval_envs)
+        for split in split_n:
+            processes = []
+            for e_idx, weight in enumerate(split):
+                p = mp.Process(
+                    target=env_runner.start,
+                    args=(
+                        weight,
+                        save_load_lock,
+                        writer_lock,
+                        env_config,
+                        e_idx % torch.cuda.device_count(),
+                        eval_cfg.framework.eval_save_metrics,
+                        eval_cfg.cinematic_recorder,
+                    ),
+                )
+                p.start()
+                processes.append(p)
+            for p in processes:
+                p.join()
 
     del env_runner
     del agent
@@ -205,8 +323,43 @@ def main(eval_cfg: DictConfig) -> None:
     env_device = utils.get_device(eval_cfg.framework.gpu)
     logging.info("Using env device %s." % str(env_device))
 
+
+    if eval_cfg.framework.left_arm_train_cfg is not None:
+        with open(eval_cfg.framework.left_arm_train_cfg, 'r') as f:
+            left_arm_train_cfg = OmegaConf.load(f)
+        left_arm_ckpt = eval_cfg.framework.left_arm_ckpt
+    else:
+        left_arm_train_cfg = None
+        left_arm_ckpt = None
+
+    """
+        UnimanualDiscrete is the same like Discrete2Robots, use robot_name to control
+        gripper_mode = UnimanualDiscrete(robot_name='right')
+
+        VoxactB: using gripper_mode = SelectableUnimanualDiscrete()
+    """
     gripper_mode = eval(eval_cfg.rlbench.gripper_mode)()
+
+    """"
+        UnimanualEndEffectorPoseViaPlanning is the same like EndEffectorPoseViaPlanning2Robots, use robot_name to control
+        planner = UnimanualEndEffectorPoseViaPlanning(
+            absolute_mode=True,
+            frame='world',
+            collision_checking=False,
+            robot_name='left'
+        )
+        planner.action(scene, target_pose, ignore_collisions=True)
+
+        EndEffectorPoseViaPlanning2Robots.action(scene, action, ignore_collisions, which_arm='left') 
+
+
+        VoxactB: using SelectableUnimanualArmEndEffectorPoseViaPlanning()
+    """
     arm_action_mode = eval(eval_cfg.rlbench.arm_action_mode)()
+
+    """
+    VoxactB: using SelectableMoveArmThenGripper(arm_action_mode, gripper_mode)
+    """
     action_mode = eval(eval_cfg.rlbench.action_mode)(arm_action_mode, gripper_mode)
 
     is_bimanual = eval_cfg.method.robot_name == "bimanual"
@@ -227,12 +380,27 @@ def main(eval_cfg: DictConfig) -> None:
         if isinstance(eval_cfg.rlbench.cameras, ListConfig)
         else [eval_cfg.rlbench.cameras]
     )
-    obs_config = observation_utils.create_obs_config(
-        eval_cfg.rlbench.cameras,
-        eval_cfg.rlbench.camera_resolution,
-        eval_cfg.method.name,
-        eval_cfg.method.robot_name,
-    )
+    """
+    train_cfg.method.crop_target_obj_voxel : Setting True for VoxactB
+    eval_cfg.method.voxposer_only_eval: Always False for VoxactB
+    eval_cfg.method.which_arm == 'dominant_assistive': Always True for VoxactB
+    """
+    if left_arm_ckpt is not None and train_cfg.method.crop_target_obj_voxel or eval_cfg.method.voxposer_only_eval or eval_cfg.method.which_arm == 'dominant_assistive':
+        obs_config = observation_utils.create_obs_config_voxposer(eval_cfg.rlbench.cameras,
+                                            eval_cfg.rlbench.camera_resolution,
+                                            train_cfg.method.name,
+                                            eval_cfg.method.robot_name,)
+    else:
+        obs_config = observation_utils.create_obs_config(eval_cfg.rlbench.cameras,
+                                            eval_cfg.rlbench.camera_resolution,
+                                            train_cfg.method.name,
+                                            eval_cfg.method.robot_name,)
+    # obs_config = observation_utils.create_obs_config(
+    #     eval_cfg.rlbench.cameras,
+    #     eval_cfg.rlbench.camera_resolution,
+    #     eval_cfg.method.name,
+    #     eval_cfg.method.robot_name,
+    # )
 
     if eval_cfg.cinematic_recorder.enabled:
         obs_config.record_gripper_closing = True
@@ -282,6 +450,8 @@ def main(eval_cfg: DictConfig) -> None:
         multi_task,
         start_seed,
         env_config,
+        left_arm_train_cfg,
+        left_arm_ckpt
     )
 
 

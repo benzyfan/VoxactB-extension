@@ -2,6 +2,7 @@ ddp:
     master_addr: "localhost"
     master_port: "0"
     num_devices: 1
+    cpu: false
 
 rlbench:
     task_name: "multi"

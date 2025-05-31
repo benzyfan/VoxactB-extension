@@ -15,7 +15,6 @@ from yarr.replay_buffer.wrappers.pytorch_replay_buffer import \
 from yarr.utils.log_writer import LogWriter
 from yarr.utils.stat_accumulator import StatAccumulator
 
-
 class OfflineTrainRunner():
 
     def __init__(self,
@@ -82,6 +81,7 @@ class OfflineTrainRunner():
 
     def _step(self, i, sampled_batch):
         update_dict = self._agent.update(i, sampled_batch)
+        # total_losses = update_dict['total_losses'].item()
         total_losses = update_dict['total_losses']
         return total_losses
 
@@ -141,7 +141,7 @@ class OfflineTrainRunner():
 
             if self._rank == 0:
                 if log_iteration and self._writer is not None:
-                    agent_summaries = self._agent.update_summaries()
+                    agent_summaries, wandb_dict = self._agent.update_summaries()
                     self._writer.add_summaries(i, agent_summaries)
 
                     self._writer.add_scalar(
@@ -151,16 +151,8 @@ class OfflineTrainRunner():
                         i, 'monitoring/cpu_percent',
                         process.cpu_percent(interval=None) / num_cpu)
                     if self._wandb_run is not None:
-                        wandb_dict = {}
                         wandb_dict['step'] = i
-                        for summary_item in agent_summaries:
-                            if isinstance(summary_item, dict):
-                                for k, v in summary_item.items():
-                                    if hasattr(v, 'item'):
-                                        wandb_dict[k] = v.item()
-                                    else:
-                                        wandb_dict[k] = v
-                        #print("wandb_dict:", wandb_dict)
+                        # print("wandb_dict:", wandb_dict)
                         self._wandb_run.log(wandb_dict)
                     logging.info(f"Train Step {i:06d} | Loss: {loss:0.5f} | Sample time: {sample_time:0.6f} | Step time: {step_time:0.4f}.")
 

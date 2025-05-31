@@ -160,11 +160,12 @@ class BimanualAgent(Agent):
 
     def update_summaries(self) -> List[Summary]:
         summaries = []
+        wandb_dict = {}
         for k, v in self._summaries.items():
             summaries.append(ScalarSummary(f"{k}", v))
 
-        right_summaries = self.right_agent.update_summaries() 
-        left_summaries =  self.left_agent.update_summaries()
+        right_summaries , wandb_dict_right = self.right_agent.update_summaries() 
+        left_summaries , wandb_dict_left =  self.left_agent.update_summaries()
         
         for summary in right_summaries:
             if not isinstance(summary, ImageSummary):
@@ -173,8 +174,9 @@ class BimanualAgent(Agent):
         for summary in left_summaries:
             if not isinstance(summary, ImageSummary):
                 summary.name = f"agent_left/{summary.name}"
+        wandb_dict = wandb_dict_left + wandb_dict_right
 
-        return right_summaries + left_summaries + summaries
+        return right_summaries + left_summaries + summaries, wandb_dict
 
 
     def act_summaries(self) -> List[Summary]:
@@ -307,11 +309,12 @@ class LeaderFollowerAgent(Agent):
     def update_summaries(self) -> List[Summary]:
 
         summaries = []
+        wandb_dict = {}
         for k, v in self._summaries.items():
             summaries.append(ScalarSummary(f"{k}", v))
 
-        leader_summaries = self.leader_agent.update_summaries() 
-        follower_summaries =  self.follower_agent.update_summaries()
+        leader_summaries , leader_wandb_dict = self.leader_agent.update_summaries() 
+        follower_summaries , follower_wandb_dict =  self.follower_agent.update_summaries()
 
         for summary in leader_summaries:
             if not isinstance(summary, ImageSummary):
@@ -319,8 +322,8 @@ class LeaderFollowerAgent(Agent):
         for summary in follower_summaries:
             if not isinstance(summary, ImageSummary):
                 summary.name = f"agent_follower/{summary.name}"
-
-        return leader_summaries + follower_summaries + summaries
+        wandb_dict = leader_wandb_dict + follower_wandb_dict
+        return leader_summaries + follower_summaries + summaries, wandb_dict
         
 
     def act_summaries(self) -> List[Summary]:

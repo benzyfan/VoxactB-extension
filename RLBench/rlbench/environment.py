@@ -48,7 +48,9 @@ class Environment(object):
                  visual_randomization_config: VisualRandomizationConfig = None,
                  dynamics_randomization_config: DynamicsRandomizationConfig = None,
                  attach_grasped_objects: bool = True,
-                 shaped_rewards: bool = False
+                 shaped_rewards: bool = False,
+                 vlm: bool = False,
+                 task_name = None,
                  ):
 
         self._dataset_root = dataset_root
@@ -64,7 +66,13 @@ class Environment(object):
         self._dynamics_randomization_config = dynamics_randomization_config
         self._attach_grasped_objects = attach_grasped_objects
         self._shaped_rewards = shaped_rewards
+        self._vlm = vlm 
+        self._task_name = task_name
 
+        if task_name == "BimanualTransferItem":
+            self._TTT_FILE = 'bimanual_transfer_item.ttt'
+        else:
+            self._TTT_FILE = None 
         if robot_setup not in SUPPORTED_ROBOTS.keys():
             raise ValueError('robot_configuration must be one of %s' %
                              str(SUPPORTED_ROBOTS.keys()))
@@ -75,6 +83,7 @@ class Environment(object):
             raise ValueError(
                 'If domain randomization is enabled, must supply either '
                 'visual_randomization_config or dynamics_randomization_config')
+        
 
         self._check_dataset_structure()
         self._pyrep = None
@@ -102,8 +111,12 @@ class Environment(object):
     def launch(self):
         if self._pyrep is not None:
             raise RuntimeError('Already called launch!')
+        print('Launching ', self._TTT_FILE)
         self._pyrep = PyRep()
-        if self._robot_setup == 'dual_panda':
+        # Using the different TTT file , which made us do not need to change the cameras every time ! 
+        if self._task_name == "BimanualTransferItem":
+            self._pyrep.launch(join(DIR_PATH, self._TTT_FILE), headless=self._headless)
+        elif self._robot_setup == 'dual_panda':
             self._pyrep.launch(join(DIR_PATH, BIMANUAL_TTT_FILE), headless=self._headless)
         else:
             self._pyrep.launch(join(DIR_PATH, TTT_FILE), headless=self._headless)
@@ -150,13 +163,14 @@ class Environment(object):
 
         if self._randomize_every is None:
             self._scene = Scene(
-                self._pyrep, self._robot, self._obs_config, self._robot_setup)
+                self._pyrep, self._robot, self._obs_config, self._robot_setup, self._vlm)
         else:
             self._scene = DomainRandomizationScene(
                 self._pyrep, self._robot, self._obs_config, self._robot_setup,
                 self._randomize_every, self._frequency,
                 self._visual_randomization_config,
                 self._dynamics_randomization_config)
+        #Maybe we can add the tracking info here
 
         self._action_mode.arm_action_mode.set_control_mode(self._robot)
 
@@ -165,19 +179,36 @@ class Environment(object):
             self._pyrep.shutdown()
         self._pyrep = None
 
-    def get_task(self, task_class: Type[Task]) -> TaskEnvironment:
+    def get_task(self, task_class: Type[Task], dominant: str = 'right') -> TaskEnvironment:
 
         # If user hasn't called launch, implicitly call it.
         if self._pyrep is None:
             self.launch()
         self._scene.unload()
         task = task_class(self._pyrep, self._robot)
+        # task = task_class(self._pyrep, self._robot)
         self._prev_task = task
-        return TaskEnvironment(
-            self._pyrep, self._robot, self._scene, task,
-            self._action_mode, self._dataset_root, self._obs_config,
-            self._static_positions, self._attach_grasped_objects,
-            self._shaped_rewards)
+        #Add more debugging info
+
+        logging.debug("Creating TaskEnvironment...")
+        print("In the environment.get_task() the dominant is ", dominant)
+        try:
+            task_env = TaskEnvironment(
+                self._pyrep, self._robot, self._scene, task,
+                self._action_mode, self._dataset_root, self._obs_config,
+                self._static_positions, self._attach_grasped_objects,
+                self._shaped_rewards, dominant)
+            logging.debug("TaskEnvironment created successfully")
+        except Exception as e:
+            logging.error(f"Error creating TaskEnvironment: {e}")
+            raise
+
+        return task_env
+        # return TaskEnvironment(
+        #     self._pyrep, self._robot, self._scene, task,
+        #     self._action_mode, self._dataset_root, self._obs_config,
+        #     self._static_positions, self._attach_grasped_objects,
+        #     self._shaped_rewards)
 
     @property
     def action_shape(self):

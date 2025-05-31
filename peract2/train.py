@@ -11,10 +11,9 @@ from omegaconf import DictConfig, OmegaConf, ListConfig
 
 import run_seed_fn
 from helpers.observation_utils import create_obs_config
-
 import torch.multiprocessing as mp
-
 import wandb
+
 
 @hydra.main(config_name="config", config_path="conf")
 def main(cfg: DictConfig) -> None:

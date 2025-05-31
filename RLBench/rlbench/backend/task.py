@@ -1,7 +1,7 @@
 import os
 import re
 from os.path import dirname, abspath, join
-from typing import List, Tuple, Callable, Union
+from typing import List, Tuple, Callable, Union, Dict
 
 import numpy as np
 from pyrep import PyRep
@@ -50,6 +50,9 @@ class Task(object):
         self._waypoints_should_repeat = lambda: False
         self._initial_objs_in_scene = None
         self._stop_at_waypoint_index = -1
+
+        self.waypoint_mapping: Dict[str, str] = {}     # name -> 'left'/'right'
+        self._waypoint_labels:  List[str] = None
 
     ########################
     # Overriding functions #
@@ -262,6 +265,18 @@ class Task(object):
         :param waypoint_index: The waypoint index.
         """
         self._stop_at_waypoint_index = waypoint_index
+    
+
+    def validate_dominant_assistive(self, dominant: str = 'right'):
+        """按 assistive→dominant 排序，验证并生成 waypoints 和 labels"""
+        self._waypoints, self._waypoint_labels = \
+            self._get_waypoints_dominant_assistive(False, dominant)
+
+    def get_waypoints_dominant_assistive(self, dominant: str = 'right') -> Tuple[List[Waypoint], List[str]]:
+        """返回 (waypoints, labels)，labels 中每个元素是 'left' or 'right'"""
+        if self._waypoints is None or self._waypoint_labels is None:
+            self.validate_dominant_assistive(dominant)
+        return self._waypoints, self._waypoint_labels
 
     ##########################
     # Other public functions #
@@ -453,6 +468,83 @@ class Task(object):
             func(way)
         return waypoints
 
+    def _get_waypoints_dominant_assistive(self, validating: bool, dominant: str):
+        waypoint_name_left = 'waypoint#%d'
+        waypoint_name      = 'waypoint%d'
+        waypoints:       List[Waypoint] = []
+        labels:          List[str]      = []
+        additional_inits = []
+
+        # 1) 决定主用/辅用臂
+        if dominant == 'right':
+            dom_arm, dom_label = self.robot.right_arm, 'right'
+            as_arm,  as_label = self.robot.left_arm,  'left'
+        else:
+            dom_arm, dom_label = self.robot.left_arm,  'left'
+            as_arm,  as_label = self.robot.right_arm, 'right'
+
+        # 2) 收集 “assistive” waypoint（waypoint#0, #1, …）
+        i = 0
+        while True:
+            name = waypoint_name_left % i
+            if not Object.exists(name) or i == self._stop_at_waypoint_index:
+                break
+            ob_type = Object.get_object_type(name)
+            if ob_type == ObjectType.DUMMY:
+                dummy = Dummy(name)
+                start_fn = self._waypoint_abilities_start.get(i, None)
+                end_fn   = self._waypoint_abilities_end.get(i, None)
+                wp = Point(dummy, as_arm,
+                           start_of_path_func=start_fn,
+                           end_of_path_func=end_fn)
+            elif ob_type == ObjectType.PATH:
+                wp = PredefinedPath(CartesianPath(name), as_arm)
+            else:
+                raise WaypointError(f'{name} unsupported type {ob_type}', self)
+
+            if name in self._waypoint_additional_inits and not validating:
+                additional_inits.append((self._waypoint_additional_inits[name], wp))
+            waypoints.append(wp)
+            labels.append(as_label)
+            i += 1
+
+        # 3) 收集 “dominant” waypoint（waypoint0,1,2…）
+        i = 0
+        while True:
+            name = waypoint_name % i
+            if not Object.exists(name) or i == self._stop_at_waypoint_index:
+                break
+            ob_type = Object.get_object_type(name)
+            if ob_type == ObjectType.DUMMY:
+                dummy = Dummy(name)
+                start_fn = self._waypoint_abilities_start.get(i, None)
+                end_fn   = self._waypoint_abilities_end.get(i, None)
+                wp = Point(dummy, dom_arm,
+                           start_of_path_func=start_fn,
+                           end_of_path_func=end_fn)
+            elif ob_type == ObjectType.PATH:
+                wp = PredefinedPath(CartesianPath(name), dom_arm)
+            else:
+                raise WaypointError(f'{name} unsupported type {ob_type}', self)
+
+            if name in self._waypoint_additional_inits and not validating:
+                additional_inits.append((self._waypoint_additional_inits[name], wp))
+            waypoints.append(wp)
+            labels.append(dom_label)
+            i += 1
+
+        # 4) 可达性检查（复用 _feasible）
+        feasible, bad = self._feasible(waypoints)
+        if not feasible:
+            raise WaypointError(f"Infeasible waypoint {bad}", self)
+
+        # 5) 额外回调
+        for fn, wp in additional_inits:
+            fn(wp)
+
+        return waypoints, labels
+
+
 
 
 class BimanualTask(Task):
@@ -473,3 +565,35 @@ class BimanualTask(Task):
         waypoints = self.get_waypoints()
         wm = self.waypoint_mapping
         return [w for w in waypoints if wm[w.name] == 'left']
+
+    
+class DABimanualTask(Task):
+    def __init__(self, pyrep: PyRep, robot: Robot, name: str = None):
+        if not isinstance(robot, BimanualRobot):
+            logging.error("tasks requires a bimanual robot")
+        super().__init__(pyrep, robot, name)
+
+    @property
+    def right_waypoints(self):
+        waypoints = self.get_waypoints()
+        wm = self.waypoint_mapping
+        return [w for w in waypoints if wm[w.name] == 'right']
+
+    @property
+    def left_waypoints(self):
+        waypoints = self.get_waypoints()
+        wm = self.waypoint_mapping
+        return [w for w in waypoints if wm[w.name] == 'left']
+
+    def reorder_waypoints(self, dominant: str = None):
+        d = dominant or getattr(self, '_dominant', None)
+        if not d:
+            logging.error("reorder_waypoints: no dominant arm set!")
+            return
+        #logging.info(f"[REORDER] called with dominant={d}")
+        original = self.get_waypoints()
+        lw = [wp for wp in original if self.waypoint_mapping[wp.name]=='left']
+        rw = [wp for wp in original if self.waypoint_mapping[wp.name]=='right']
+        new_order = (rw+lw) if d=='left' else (lw+rw)
+        #logging.info(f"[REORDER] new order: {[wp.name for wp in new_order]}")
+        self._waypoints = new_order

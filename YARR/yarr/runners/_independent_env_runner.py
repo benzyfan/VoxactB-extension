@@ -21,6 +21,8 @@ from yarr.utils.video_utils import CircleCameraMotion, TaskRecorder
 
 from pyrep.objects.dummy import Dummy
 from pyrep.objects.vision_sensor import VisionSensor
+from rlbench.backend.conditions import ConditionSet
+from collections import Counter
 
 from yarr.runners._env_runner import _EnvRunner
 
@@ -54,6 +56,17 @@ class _IndependentEnvRunner(_EnvRunner):
                  env_device: torch.device = None,
                  previous_loaded_weight_folder: str = '',
                  num_eval_runs: int = 1,
+                 left_arm_agent = None,
+                 left_arm_ckpt = None,
+                 which_arm = None,
+                 crop_target_obj_voxel = None,
+                 crop_radius = None,
+                 voxposer_only_eval = False,
+                 no_voxposer = False,
+                 no_acting_stabilizing = False,
+                 baseline_name = '',
+                 gt_target_object_world_coords = False,
+                 kwargs = None,
                  ):
 
             super().__init__(train_env, eval_env, agent, timesteps,
@@ -63,7 +76,12 @@ class _IndependentEnvRunner(_EnvRunner):
                              eval_epochs_signal, eval_report_signal, log_freq,
                              rollout_generator, save_load_lock, current_replay_ratio,
                              target_replay_ratio, weightsdir, logdir, env_device,
-                             previous_loaded_weight_folder, num_eval_runs)
+                             previous_loaded_weight_folder, num_eval_runs,
+                             left_arm_agent, left_arm_ckpt, 
+                             which_arm, crop_target_obj_voxel, crop_radius, 
+                             voxposer_only_eval, no_voxposer, no_acting_stabilizing, 
+                             baseline_name, gt_target_object_world_coords, kwargs)
+            print("Now in the yarr._independent_env_runner")
 
     def _load_save(self):
         if self._weightsdir is None:
@@ -109,6 +127,25 @@ class _IndependentEnvRunner(_EnvRunner):
             raise Exception('Neither task_class nor task_classes found in eval env')
         return eval_task_name, multi_task
 
+    # Add VoxactB functions
+    def tr_init_func(self, _env):
+        print("Now we are in the _independent_env_runner.tr_init_func, this is added for the VoxactB ")
+        if self.rec_cfg.enabled:
+            cam_placeholder = Dummy('cam_cinematic_placeholder')
+            cam = VisionSensor.create(self.rec_cfg.camera_resolution)
+            cam_placeholder_pos = np.array([-4.9599e-01, -1.6324e+00, +2.4985e+00, -0.2325498, -0.868057, -0.4236882, -0.1135163])
+            cam.set_pose(cam_placeholder_pos)
+            cam.set_parent(cam_placeholder)
+
+            cam_motion = CircleCameraMotion(cam, Dummy('cam_cinematic_base'), self.rec_cfg.rotate_speed)
+            self.tr = TaskRecorder(_env, cam_motion, fps=self.rec_cfg.fps)
+
+            if self._which_arm == 'dominant_assistive':
+                _env.env.rlbench_env._action_mode.arm_action_mode.set_callable_each_step(self.tr.take_snap)
+            else:
+                _env.env._action_mode.arm_action_mode.set_callable_each_step(self.tr.take_snap)
+            self.tr._cam_motion.save_pose()
+
     def _run_eval_independent(self, name: str,
                               stats_accumulator,
                               weight,
@@ -138,25 +175,38 @@ class _IndependentEnvRunner(_EnvRunner):
         env.eval = eval
         env.launch()
 
+        if self._left_arm_agent is not None:
+            self._left_arm_agent = copy.deepcopy(self._left_arm_agent)
+            with writer_lock: # hack to prevent multiple CLIP downloads ... argh should use a separate lock
+                self._left_arm_agent.build(training=False, device=device)
+            self._left_arm_agent.load_weight(self._left_arm_ckpt)
+
         # initialize cinematic recorder if specified
-        rec_cfg = cinematic_recorder_cfg
-        if rec_cfg.enabled:
+        self.rec_cfg = cinematic_recorder_cfg
+        if self.rec_cfg.enabled:
             cam_placeholder = Dummy('cam_cinematic_placeholder')
-            cam = VisionSensor.create(rec_cfg.camera_resolution)
+            cam = VisionSensor.create(self.rec_cfg.camera_resolution)
+            # This is used for recording the videos 
+            cam_placeholder_pos = np.array([-4.9599e-01, -1.6324e+00, +2.4985e+00, -0.2325498, -0.868057, -0.4236882, -0.1135163])
             cam.set_pose(cam_placeholder.get_pose())
             cam.set_parent(cam_placeholder)
 
-            cam_motion = CircleCameraMotion(cam, Dummy('cam_cinematic_base'), rec_cfg.rotate_speed)
-            tr = TaskRecorder(env, cam_motion, fps=rec_cfg.fps)
+            cam_motion = CircleCameraMotion(cam, Dummy('cam_cinematic_base'), self.rec_cfg.rotate_speed)
+            self.tr = TaskRecorder(env, cam_motion, fps=self.rec_cfg.fps)
 
-            env.env._action_mode.arm_action_mode.set_callable_each_step(tr.take_snap)
+            # env.env._action_mode.arm_action_mode.set_callable_each_step(self.tr.take_snap)
+
+            if self._which_arm == 'dominant_assistive':
+                env.env.rlbench_env._action_mode.arm_action_mode.set_callable_each_step(self.tr.take_snap)
+            else:
+                env.env._action_mode.arm_action_mode.set_callable_each_step(self.tr.take_snap)
 
         if not os.path.exists(self._weightsdir):
             raise Exception('No weights directory found.')
 
         # to save or not to save evaluation metrics (set as False for recording videos)
         if self._save_metrics:
-            csv_file = 'eval_data.csv' if not self._is_test_set else 'test_data.csv'
+            csv_file = f'eval_data_{env.env._task_name}.csv' if not self._is_test_set else f'test_data_{env.env._task_name}.csv'
             writer = LogWriter(self._logdir, True, True,
                                env_csv=csv_file)
 
@@ -171,10 +221,15 @@ class _IndependentEnvRunner(_EnvRunner):
         new_transitions = {'train_envs': 0, 'eval_envs': 0}
         total_transitions = {'train_envs': 0, 'eval_envs': 0}
         current_task_id = -1
+        
+        # I don't know why we need this progress, but I have to add this to made it work
+        if self._kwargs is not None: 
+            self._kwargs['_IndependentEnvRunner'] = self
 
+        current_run_failure_steps = []
         for n_eval in range(self._num_eval_runs):
-            if rec_cfg.enabled:
-                tr._cam_motion.save_pose()
+            if self.rec_cfg.enabled:
+                self.tr._cam_motion.save_pose()
 
             # best weight for each task (used for test evaluation)
             if type(weight) == dict:
@@ -186,6 +241,8 @@ class _IndependentEnvRunner(_EnvRunner):
                 weight_name = str(task_weight)
                 print('Evaluating weight %s for %s' % (weight_name, task_name))
 
+
+            current_run_failure_steps = []
             # evaluate on N tasks * M episodes per task = total eval episodes
             for ep in range(self._eval_episodes):
                 eval_demo_seed = ep + self._eval_from_eps_number
@@ -197,8 +254,21 @@ class _IndependentEnvRunner(_EnvRunner):
                     self._step_signal, env, self._agent,
                     self._episode_length, self._timesteps,
                     eval, eval_demo_seed=eval_demo_seed,
-                    record_enabled=rec_cfg.enabled)
+                    record_enabled=self.rec_cfg.enabled,
+                    #Added from VoxactB 
+                    left_arm_agent=self._left_arm_agent,
+                    which_arm=self._which_arm, 
+                    crop_target_obj_voxel=self._crop_target_obj_voxel,
+                    crop_radius=self._crop_radius, 
+                    voxposer_only_eval=self._voxposer_only_eval, 
+                    ep_number=ep, no_voxposer=self._no_voxposer, 
+                    no_acting_stabilizing=self._no_acting_stabilizing, 
+                    baseline_name=self._baseline_name, 
+                    gt_target_object_world_coords=self._gt_target_object_world_coords, 
+                    kwargs=self._kwargs)
                 try:
+                    # used for changing the arm using for the moving 
+                    curr_transition = 0
                     for replay_transition in generator:
                         while True:
                             if self._kill_signal.value:
@@ -218,8 +288,13 @@ class _IndependentEnvRunner(_EnvRunner):
                             if len(self.agent_summaries) == 0:
                                 # Only store new summaries if the previous ones
                                 # have been popped by the main env runner.
-                                for s in self._agent.act_summaries():
-                                    self.agent_summaries.append(s)
+                                if curr_transition % 2 == 0 and self._left_arm_agent is not None:
+                                    for s in self._left_arm_agent.act_summaries():
+                                        self.agent_summaries.append(s)
+                                else:
+                                    for s in self._agent.act_summaries():
+                                        self.agent_summaries.append(s)
+                                curr_transition += 1
                         episode_rollout.append(replay_transition)
                 except StopIteration as e:
                     continue
@@ -241,10 +316,46 @@ class _IndependentEnvRunner(_EnvRunner):
                 task_name, _ = self._get_task_name()
                 reward = episode_rollout[-1].reward
                 lang_goal = env._lang_goal
-                print(f"Evaluating {task_name} | Episode {ep} | Score: {reward} | Lang Goal: {lang_goal}")
+                #print(f"Evaluating {task_name} | Episode {ep} | Score: {reward} | Lang Goal: {lang_goal}")
 
+                # helpful for debugging and figuring out where a policy performs poorly
+                # if task_name == 'open_jar':
+                #     is_lid_in_goal_loc = env._task._task.get_conditions()[0].condition_met()[0]
+                #     is_semi_closed, is_closed_not_valid_grasp, is_obj_grasped = env._task._task.get_conditions()[1].get_status()
+                #     print(f"Lid in goal loc: {is_lid_in_goal_loc} | left gripper semi-closed: {is_semi_closed} | left gripper closed (not a valid grasp): {is_closed_not_valid_grasp} | left gripper grasping bottle: {is_obj_grasped}")
+                #     if is_lid_in_goal_loc:
+                #         lid_open_and_reach_goal += 1
+                #     if is_obj_grasped and is_semi_closed and (not is_closed_not_valid_grasp):
+                #         jar_grasp_successfully += 1
+                # elif task_name == 'open_drawer':
+                #     has_bottom_drawer_handle_reach_goal = env._task._task.get_conditions()[0].condition_met()[0]
+                #     is_hand_holding_down_the_drawer = env._task._task.get_conditions()[1].condition_met()[0]
+                #     print(f"Is hand holding the drawer: {is_hand_holding_down_the_drawer} | has bottom drawer handle reached goal: {has_bottom_drawer_handle_reach_goal}")
+
+                current_task_obj = env._task._task
+                episode_failure_step = -2 # Default if no conditions
+                if hasattr(current_task_obj, '_success_conditions') and current_task_obj._success_conditions:
+                    condition_set_obj = current_task_obj._success_conditions[0]
+                    if isinstance(condition_set_obj, ConditionSet):
+                        num_conditions = len(condition_set_obj._conditions)
+                        failure_step_index = condition_set_obj._current_condition_index
+
+                        if failure_step_index >= num_conditions: # Success
+                            current_run_failure_steps.append(-1)
+                            episode_failure_step = -1
+                        else: 
+                            current_run_failure_steps.append(failure_step_index + 1) # 1-indexed
+                            episode_failure_step = failure_step_index + 1
+                    else:
+                        current_run_failure_steps.append(-2) 
+                        episode_failure_step = -2 
+                else:
+                    current_run_failure_steps.append(-2) 
+                    episode_failure_step = -2
+                
+                print(f"Evaluating {task_name} | Episode {ep} | Score: {reward} | Failure Step: {episode_failure_step}")
                 # save recording
-                if rec_cfg.enabled:
+                if self.rec_cfg.enabled:
                     success = reward > 0.99
                     record_file = os.path.join(seed_path, 'videos',
                                                '%s_w%s_s%s_%s.mp4' % (task_name,
@@ -253,15 +364,39 @@ class _IndependentEnvRunner(_EnvRunner):
                                                                       'succ' if success else 'fail'))
 
                     lang_goal = self._eval_env._lang_goal
+                    try:
+                        self.tr.save(record_file, lang_goal, reward)
+                        self.tr._cam_motion.restore_pose()
+                    except:
+                        print('!!!!!!!!!!! Issue saving video... Continue to the next episode.')
 
-                    tr.save(record_file, lang_goal, reward)
-                    tr._cam_motion.restore_pose()
+                    #Orginal code 
+                    # tr.save(record_file, lang_goal, reward)
+                    # tr._cam_motion.restore_pose()
 
+
+            failure_step, count = Counter(current_run_failure_steps).most_common(1)[0]
+            percent = count / len(current_run_failure_steps)
+            
             # report summaries
             summaries = []
             summaries.extend(stats_accumulator.pop())
 
+
+            if len(current_run_failure_steps) > 0:
+                # print(f"Failure step: {failure_step} | Percent: {percent}")
+                summaries.append(ScalarSummary('eval_envs/failure_step', failure_step))
+                summaries.append(ScalarSummary('eval_envs/step_percentage', percent))
+
             eval_task_name, multi_task = self._get_task_name()
+
+            if self._left_arm_ckpt is not None:
+                # log left arm's checkpoint number
+                summaries.append(ScalarSummary('eval_envs/left_arm_steps', int(self._left_arm_ckpt.split('/')[-2])))
+            if task_name == 'open_jar':
+                # Acturally , there is no open_jar in the task and hope there will not be open_jar
+                summaries.append(ScalarSummary('eval_envs/lid_open_and_reach_goal', int(lid_open_and_reach_goal)))
+                summaries.append(ScalarSummary('eval_envs/jar_grasp_successfully', int(jar_grasp_successfully)))
 
             if eval_task_name and multi_task:
                 for s in summaries:
@@ -295,3 +430,4 @@ class _IndependentEnvRunner(_EnvRunner):
 
     def kill(self):
         self._kill_signal.value = True
+

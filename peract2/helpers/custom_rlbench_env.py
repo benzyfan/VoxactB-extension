@@ -1,12 +1,12 @@
-from typing import Type, List
+from typing import Type, List, Optional
 
 import numpy as np
 from rlbench import ObservationConfig, ActionMode
 from rlbench.backend.exceptions import InvalidActionError
 from rlbench.backend.observation import (
-    BimanualObservation,
     Observation,
-    UnimanualObservation,
+    BimanualObservation,
+    UnimanualObservation
 )
 from rlbench.backend.task import Task
 from yarr.agents.agent import ActResult, VideoSummary, TextSummary
@@ -20,9 +20,14 @@ from pyrep.errors import IKError, ConfigurationPathError
 from pyrep.objects import VisionSensor, Dummy
 
 import logging
+import numpy as np
+
+from rlbench import tasks
 
 
 class CustomRLBenchEnv(RLBenchEnv):
+
+
     def __init__(
         self,
         task_class: Type[Task],
@@ -36,6 +41,11 @@ class CustomRLBenchEnv(RLBenchEnv):
         time_in_state: bool = False,
         include_lang_goal_in_obs: bool = False,
         record_every_n: int = 20,
+
+        train_cfg=None,
+        voxposer_only_eval=False,
+        eval_which_arm: str = "",
+        custom_ttt_file: str = "",
     ):
         super(CustomRLBenchEnv, self).__init__(
             task_class,
@@ -45,6 +55,11 @@ class CustomRLBenchEnv(RLBenchEnv):
             channels_last,
             headless=headless,
             include_lang_goal_in_obs=include_lang_goal_in_obs,
+            train_cfg=train_cfg, 
+            voxposer_only_eval=voxposer_only_eval, 
+            eval_which_arm=eval_which_arm, 
+            custom_ttt_file=custom_ttt_file
+
         )
         self._reward_scale = reward_scale
         self._episode_index = 0
@@ -63,6 +78,15 @@ class CustomRLBenchEnv(RLBenchEnv):
         }
         self._last_exception = None
 
+        self._train_cfg = train_cfg
+        self._voxposer_only_eval = voxposer_only_eval
+        self._eval_which_arm = eval_which_arm
+        self._custom_ttt_file = custom_ttt_file
+     
+        self._dominant_assitive_policy = False 
+
+        logging.info(f"[CustomRLBenchEnv] init with train_cfg={train_cfg}, eval_which_arm={eval_which_arm}")
+
     @property
     def observation_elements(self) -> List[ObservationElement]:
         obs_elems = super(CustomRLBenchEnv, self).observation_elements
@@ -70,19 +94,21 @@ class CustomRLBenchEnv(RLBenchEnv):
             if "low_dim_state" in oe.name:
                 oe.shape = (
                     oe.shape[0] - 7 * 3 + int(self._time_in_state),
-                )  # remove pose and joint velocities as they will not be included
+                )
                 self.low_dim_state_len = oe.shape[0]
-
         return obs_elems
 
     def extract_obs(self, obs: Observation, t=None, prev_action=None):
         if obs.is_bimanual:
+            # print("Now we in this custom_rlbench_env.extract_obs_bimanual")
             return self.extract_obs_bimanual(obs, t, prev_action)
         else:
             return self.extract_obs_unimanual(obs, t, prev_action)
 
     def extract_obs_bimanual(self, obs: BimanualObservation, t=None, prev_action=None):
         obs.right.joint_velocities = None
+        obs.left.joint_velocities = None
+
         right_grip_mat = obs.right.gripper_matrix
         right_grip_pose = obs.right.gripper_pose
         right_joint_pos = obs.right.joint_positions
@@ -90,7 +116,6 @@ class CustomRLBenchEnv(RLBenchEnv):
         obs.right.gripper_matrix = None
         obs.right.joint_positions = None
 
-        obs.left.joint_velocities = None
         left_grip_mat = obs.left.gripper_matrix
         left_grip_pose = obs.left.gripper_pose
         left_joint_pos = obs.left.joint_positions
@@ -102,35 +127,83 @@ class CustomRLBenchEnv(RLBenchEnv):
             obs.right.gripper_joint_positions = np.clip(
                 obs.right.gripper_joint_positions, 0.0, 0.04
             )
+        if obs.left.gripper_joint_positions is not None:
             obs.left.gripper_joint_positions = np.clip(
                 obs.left.gripper_joint_positions, 0.0, 0.04
             )
 
         obs_dict = super(CustomRLBenchEnv, self).extract_obs(obs)
 
-        if self._time_in_state:
-            time = (
-                1.0 - ((self._i if t is None else t) / float(self._episode_length - 1))
-            ) * 2.0 - 1.0
+        if self._train_cfg and hasattr(self._train_cfg, "method"):
+            if hasattr(self._train_cfg.method, "arm_pred_input") and self._train_cfg.method.arm_pred_input:
+                raise NotImplementedError("We havn't test the arm_pred_input in peract2!")
+                if "low_dim_state_right_arm" in obs_dict:
+                    obs_dict["low_dim_state_right_arm"] = np.concatenate(
+                        [obs_dict["low_dim_state_right_arm"], [0]]
+                    ).astype(np.float32)
+                if "low_dim_state_left_arm" in obs_dict:
+                    obs_dict["low_dim_state_left_arm"] = np.concatenate(
+                        [obs_dict["low_dim_state_left_arm"], [1]]
+                    ).astype(np.float32)
 
-            if "low_dim_state" in obs_dict:
-                obs_dict["low_dim_state"] = np.concatenate(
-                    [obs_dict["low_dim_state"], [time]]
-                ).astype(np.float32)
+            elif hasattr(self._train_cfg.method, "arm_id_to_proprio") and self._train_cfg.method.arm_id_to_proprio:
+                raise NotImplementedError("We havn't test the arm_id_to_proprio in peract2!")
+                if self._time_in_state:
+                    time_val = (
+                        1.0 - ((self._i if t is None else t) / float(self._episode_length - 1))
+                    ) * 2.0 - 1.0
+                    if "low_dim_state_right_arm" in obs_dict:
+                        obs_dict["low_dim_state_right_arm"] = np.concatenate(
+                            [obs_dict["low_dim_state_right_arm"], [time_val], [0]]
+                        ).astype(np.float32)
+                    if "low_dim_state_left_arm" in obs_dict:
+                        obs_dict["low_dim_state_left_arm"] = np.concatenate(
+                            [obs_dict["low_dim_state_left_arm"], [time_val], [1]]
+                        ).astype(np.float32)
             else:
-                obs_dict["right_low_dim_state"] = np.concatenate(
-                    [obs_dict["right_low_dim_state"], [time]]
-                ).astype(np.float32)
-                obs_dict["left_low_dim_state"] = np.concatenate(
-                    [obs_dict["left_low_dim_state"], [time]]
-                ).astype(np.float32)
+                # Will made this into multiple in thousands on times
+                #logging.info("Now using the original pipeline of peract_bimanual")
+                if self._time_in_state:
+                    time = (
+                        1.0 - ((self._i if t is None else t) / float(self._episode_length - 1))
+                    ) * 2.0 - 1.0
+
+                    if "low_dim_state" in obs_dict:
+                        obs_dict["low_dim_state"] = np.concatenate(
+                            [obs_dict["low_dim_state"], [time]]
+                        ).astype(np.float32)
+                    else:
+                        obs_dict["right_low_dim_state"] = np.concatenate(
+                            [obs_dict["right_low_dim_state"], [time]]
+                        ).astype(np.float32)
+                        obs_dict["left_low_dim_state"] = np.concatenate(
+                            [obs_dict["left_low_dim_state"], [time]]
+                        ).astype(np.float32)
+        else:
+            # Acturally we never made to this line, but to be a back up
+            if self._time_in_state:
+                print("Now we are at custom_rlbench_env.extract_obs_bimanual.self._time_in_state")
+                time = (
+                    1.0 - ((self._i if t is None else t) / float(self._episode_length - 1))
+                ) * 2.0 - 1.0
+                if "low_dim_state" in obs_dict:
+                    obs_dict["low_dim_state"] = np.concatenate(
+                        [obs_dict["low_dim_state"], [time]]
+                    ).astype(np.float32)
+                else:
+                    obs_dict["right_low_dim_state"] = np.concatenate(
+                        [obs_dict["right_low_dim_state"], [time]]
+                    ).astype(np.float32)
+                    obs_dict["left_low_dim_state"] = np.concatenate(
+                        [obs_dict["left_low_dim_state"], [time]]
+                    ).astype(np.float32)
 
         obs.right.gripper_matrix = right_grip_mat
-        obs.right.joint_positions = right_joint_pos
         obs.right.gripper_pose = right_grip_pose
+        obs.right.joint_positions = right_joint_pos
         obs.left.gripper_matrix = left_grip_mat
-        obs.left.joint_positions = left_joint_pos
         obs.left.gripper_pose = left_grip_pose
+        obs.left.joint_positions = left_joint_pos
 
         obs_dict["left_joint_positions"] = obs.left.joint_positions
         obs_dict["left_gripper_joint_positions"] = obs.left.gripper_joint_positions
@@ -142,38 +215,53 @@ class CustomRLBenchEnv(RLBenchEnv):
     def extract_obs_unimanual(
         self, obs: UnimanualObservation, t=None, prev_action=None
     ):
+
         obs.joint_velocities = None
         grip_mat = obs.gripper_matrix
         grip_pose = obs.gripper_pose
         joint_pos = obs.joint_positions
         obs.gripper_pose = None
-        # obs.gripper_pose = None
         obs.gripper_matrix = None
         obs.joint_positions = None
+
         if obs.gripper_joint_positions is not None:
             obs.gripper_joint_positions = np.clip(
                 obs.gripper_joint_positions, 0.0, 0.04
             )
 
         obs_dict = super(CustomRLBenchEnv, self).extract_obs(obs)
-
-        if self._time_in_state:
-            time = (
-                1.0 - ((self._i if t is None else t) / float(self._episode_length - 1))
-            ) * 2.0 - 1.0
-            obs_dict["low_dim_state"] = np.concatenate(
-                [obs_dict["low_dim_state"], [time]]
-            ).astype(np.float32)
+        if self._train_cfg.method.arm_pred_input:
+            raise NotImplementedError("arm_id_to_proprio havn't be tested in peract2!")
+            # arm ID is defined in peract/helpers/demo_loading_utils.py
+            obs_dict['low_dim_state_right_arm'] = np.concatenate(
+                [obs_dict['low_dim_state_right_arm'], [0]]).astype(np.float32)
+            obs_dict['low_dim_state_left_arm'] = np.concatenate(
+                [obs_dict['low_dim_state_left_arm'], [1]]).astype(np.float32)
+        elif self._train_cfg.method.arm_id_to_proprio:
+            raise NotImplementedError("arm_id_to_proprio havn't be tested in peract2!")
+            if self._time_in_state:
+                time = (1. - ((self._i if t is None else t) / float(
+                    self._episode_length - 1))) * 2. - 1.
+                obs_dict['low_dim_state_right_arm'] = np.concatenate(
+                    [obs_dict['low_dim_state_right_arm'], [time], [0]]).astype(np.float32)
+                obs_dict['low_dim_state_left_arm'] = np.concatenate(
+                    [obs_dict['low_dim_state_left_arm'], [time], [1]]).astype(np.float32)
+        else:
+            if self._time_in_state:
+                time_val = (
+                    1.0 - ((self._i if t is None else t) / float(self._episode_length - 1))
+                ) * 2.0 - 1.0
+                if "low_dim_state" in obs_dict:
+                    obs_dict["low_dim_state"] = np.concatenate(
+                        [obs_dict["low_dim_state"], [time_val]]
+                    ).astype(np.float32)
 
         obs.gripper_matrix = grip_mat
-        # obs.gripper_pose = grip_pose
-        obs.joint_positions = joint_pos
         obs.gripper_pose = grip_pose
-        # obs_dict['gripper_pose'] = grip_pose
+        obs.joint_positions = joint_pos
 
         obs_dict["joint_positions"] = obs.joint_positions
         obs_dict["gripper_joint_positions"] = obs.gripper_joint_positions
-
         return obs_dict
 
     def launch(self):
@@ -191,9 +279,10 @@ class CustomRLBenchEnv(RLBenchEnv):
     def reset(self) -> dict:
         self._i = 0
         self._previous_obs_dict = super(CustomRLBenchEnv, self).reset()
-        self._record_current_episode = (
-            self.eval and self._episode_index % self._record_every_n == 0
-        )
+        self._record_current_episode = False
+        # self._record_current_episode = (
+        #     self.eval and self._episode_index % self._record_every_n == 0
+        # )
         self._episode_index += 1
         self._recorded_images.clear()
         return self._previous_obs_dict
@@ -216,13 +305,76 @@ class CustomRLBenchEnv(RLBenchEnv):
         final_frames[:, :, :, 1 if success else 0] = 255
         self._recorded_images.extend(list(final_frames))
 
-    def step(self, act_result: ActResult) -> Transition:
+    def step(self, act_result: ActResult, which_arm: Optional[str] = None) -> Transition:
         action = act_result.action
         success = False
-        obs = self._previous_obs_dict  # in case action fails.
+        obs = self._previous_obs_dict
 
         try:
-            obs, reward, terminal = self._task.step(action)
+            if which_arm is not None and hasattr(self._task, "step"):
+                obs, reward, terminal = self._task.step(action, which_arm)
+            else:
+                obs, reward, terminal = self._task.step(action)
+
+            if reward >= 1:
+                success = True
+                reward *= self._reward_scale
+            else:
+                reward = 0.0
+            obs = self.extract_obs(obs)
+            self._previous_obs_dict = obs
+
+        except (IKError, ConfigurationPathError, InvalidActionError) as e:
+            terminal = True
+            reward = 0.0
+            if isinstance(e, IKError):
+                self._error_type_counts["IKError"] += 1
+                print("Error in step function: IKError")
+            elif isinstance(e, ConfigurationPathError):
+                self._error_type_counts["ConfigurationPathError"] += 1
+                print("Error in step function: configuration path error")
+            elif isinstance(e, InvalidActionError):
+                self._error_type_counts["InvalidActionError"] += 1
+                print("Error in step function: invalid action error")
+
+            self._last_exception = e
+
+        summaries = []
+        self._i += 1
+        if (terminal or self._i == self._episode_length) and self._record_current_episode:
+            self._append_final_frame(success)
+            vid = np.array(self._recorded_images).transpose((0, 3, 1, 2))
+            summaries.append(
+                VideoSummary(
+                    "episode_rollout_" + ("success" if success else "fail"),
+                    vid, fps=30
+                )
+            )
+            error_str = (
+                f"Errors - IK : {self._error_type_counts['IKError']}, "
+                f"ConfigPath : {self._error_type_counts['ConfigurationPathError']}, "
+                f"InvalidAction : {self._error_type_counts['InvalidActionError']}"
+            )
+            if not success and self._last_exception is not None:
+                error_str += f"\n Last Exception: {self._last_exception}"
+                self._last_exception = None
+            summaries.append(TextSummary("errors", f"Success: {success} | " + error_str))
+
+        return Transition(obs, reward, terminal, summaries=summaries)
+
+
+    #Function for VoxactB 
+    def step_custom_action_mode(self, act_result: ActResult, which_arm: str) -> Transition:
+        action = act_result.action
+        success = False
+        obs = self._previous_obs_dict
+
+        try:
+            if hasattr(self._task, "step_custom_action_mode"):
+                obs, reward, terminal = self._task.step_custom_action_mode(action, which_arm)
+            else:
+                obs, reward, terminal = self._task.step(action, which_arm)
+
             if reward >= 1:
                 success = True
                 reward *= self._reward_scale
@@ -233,30 +385,28 @@ class CustomRLBenchEnv(RLBenchEnv):
         except (IKError, ConfigurationPathError, InvalidActionError) as e:
             terminal = True
             reward = 0.0
-
             if isinstance(e, IKError):
                 self._error_type_counts["IKError"] += 1
+                print("Error in step_custom_action_mode: IKError")
             elif isinstance(e, ConfigurationPathError):
                 self._error_type_counts["ConfigurationPathError"] += 1
+                print("Error in step_custom_action_mode: configuration path error")
             elif isinstance(e, InvalidActionError):
                 self._error_type_counts["InvalidActionError"] += 1
-
+                print("Error in step_custom_action_mode: invalid action error")
             self._last_exception = e
 
         summaries = []
         self._i += 1
-        if (
-            terminal or self._i == self._episode_length
-        ) and self._record_current_episode:
+        if (terminal or self._i == self._episode_length) and self._record_current_episode:
             self._append_final_frame(success)
             vid = np.array(self._recorded_images).transpose((0, 3, 1, 2))
             summaries.append(
                 VideoSummary(
-                    "episode_rollout_" + ("success" if success else "fail"), vid, fps=30
+                    "episode_rollout_" + ("success" if success else "fail"),
+                    vid, fps=30
                 )
             )
-
-            # error summary
             error_str = (
                 f"Errors - IK : {self._error_type_counts['IKError']}, "
                 f"ConfigPath : {self._error_type_counts['ConfigurationPathError']}, "
@@ -266,32 +416,170 @@ class CustomRLBenchEnv(RLBenchEnv):
                 error_str += f"\n Last Exception: {self._last_exception}"
                 self._last_exception = None
 
-            summaries.append(
-                TextSummary("errors", f"Success: {success} | " + error_str)
-            )
+            summaries.append(TextSummary("errors", f"Success: {success} | " + error_str))
+
         return Transition(obs, reward, terminal, summaries=summaries)
+
+    #Function for VoxactB 
+    def no_step_get_env_stats(self) -> Transition:
+        if not hasattr(self._task, "no_step_get_env_stats"):
+            raise NotImplementedError("no_step_get_env_stats is not supported by the current task.")
+        obs, reward, terminal = self._task.no_step_get_env_stats()
+        if reward >= 1:
+            reward *= self._reward_scale
+        else:
+            reward = 0.0
+        obs = self.extract_obs(obs)
+        self._previous_obs_dict = obs
+        summaries = []
+        self._i += 1
+        return Transition(obs, reward, terminal, summaries=summaries)
+
+    #Function for VoxactB 
+    def get_observation(self):
+        obs = self._task.get_observation()
+        obs = self.extract_obs(obs)
+        self._previous_obs_dict = obs
+        self._record_current_episode = False
+        self._episode_index += 1
+        self._recorded_images.clear()
+        return obs
 
     def reset_to_demo(self, i):
         self._i = 0
-        # super(CustomRLBenchEnv, self).reset()
-
         self._task.set_variation(-1)
         (d,) = self._task.get_demos(
             1, live_demos=False, random_selection=False, from_episode_number=i
         )
-
         self._task.set_variation(d.variation_number)
         _, obs = self._task.reset_to_demo(d)
         self._lang_goal = self._task.get_task_descriptions()[0]
 
+        self._task._scene.step()
+        obs = self._task.get_observation()
+
         self._previous_obs_dict = self.extract_obs(obs)
-        self._record_current_episode = (
-            self.eval and self._episode_index % self._record_every_n == 0
-        )
+        self._record_current_episode = False
         self._episode_index += 1
         self._recorded_images.clear()
 
         return self._previous_obs_dict
+
+    def reset_to_demo_voxposer(self, i, ep_number: int = -1):
+        # I don't know who create this function, cursor is currently , idiot! 
+        # I have to check if he place me more codes! really stupid! 
+        self._i = 0
+        self._task.set_variation(-1)
+        d, = self._task.get_demos(
+            1, live_demos=False, random_selection=False, from_episode_number=i
+        )
+        self._task.set_variation(d.variation_number)
+
+        if self._rlbench_env._dominant_assitive_policy:
+            # figure out the dominant arm in this episode
+            if self._rlbench_env:
+                self._rlbench_env.set_dominant_hand_for_ep_reset(ep_number)
+                self._task.set_dominant(self._rlbench_env._dominant_arm_for_ep_reset)
+        try:
+            _, obs = self._task.reset_to_demo(d, self._dominant_assitive_policy)
+        except:
+            if self._rlbench_env:
+                self._rlbench_env.rlbench_env.shutdown()
+                if self._task._task.__class__.__name__ == "OpenJar":
+                    self._rlbench_env.load_task(tasks.OpenJar)
+                elif self._task._task.__class__.__name__ == "OpenDrawer":
+                    self._rlbench_env.load_task(tasks.OpenDrawer)
+                elif self._task._task.__class__.__name__ == "SweepToDustpan":
+                    self._rlbench_env.load_task(tasks.SweepToDustpan)
+                elif self._task._task.__class__.__name__ == "PutItemInDrawer":
+                    self._rlbench_env.load_task(tasks.PutItemInDrawer)
+                elif self._task._task.__class__.__name__ == "HandOverItem":
+                    self._rlbench_env.load_task(tasks.HandOverItem)
+                else:
+                    raise NotImplementedError
+                self._rlbench_env._task._scene.init_task()
+                self._i = 0
+                # update self._task with the newly initialized task
+                self._task = self._rlbench_env.task
+                # reset the environment again to episode i
+                self._task.set_variation(-1)
+                d, = self._task.get_demos(
+                    1, live_demos=False, random_selection=False, from_episode_number=i
+                )
+
+                self._rlbench_env._task.set_variation(d.variation_number)
+                if self._rlbench_env._dominant_assitive_policy:
+                    self._rlbench_env.set_dominant_hand_for_ep_reset(ep_number)
+                    self._task.set_dominant(self._rlbench_env._dominant_arm_for_ep_reset)
+                _, obs = self._task.reset_to_demo(d, self._rlbench_env._dominant_assitive_policy)
+                self._rlbench_env.load_objects()
+                self.reload_voxposer_variables()
+                # need this reset here to move the arms back to the starting positions NOTE: doesn't seem to be needed anymore
+                # self._task._scene.reset()
+                obs = self._task.get_observation()
+            else:
+                raise RuntimeError("No _rlbench_env available to reload tasks!")
+
+        if self._rlbench_env and hasattr(self._rlbench_env, "_process_obs"):
+            print("now in the CustomRLBenchEnv,settign in the self._rlbench_env._process_obs(obs)")
+            obs = self._rlbench_env._process_obs(obs)
+
+
+        if self._rlbench_env._dominant_assitive_policy:
+            self._rlbench_env.update_env_variables()
+            # update obs in _rlbench_env for the following function calls
+            self._rlbench_env.init_obs = obs
+            self._rlbench_env.latest_obs = obs
+
+            ###### for debugging
+            # debug_front_rgb = np.clip((self._rlbench_env.latest_obs.front_rgb).astype(np.uint8), 0, 255)
+            # from PIL import Image
+            # debug_front_rgb = Image.fromarray(debug_front_rgb)
+            # debug_front_rgb.show()
+
+            # determine which arm to use
+            self._rlbench_env.determine_dominant_hand()
+             # set the dominant arm
+            self._task.set_dominant(self._rlbench_env._dominant_arm)
+            # get lagnauge instruction based on the determined dominant arm
+            # language instruction is used in VoxPoser to control which arm to execute first (LLM prompting)
+            self._lang_goal = self._task.get_task_descriptions_dominant_assistive()[0]
+        else:
+            self._lang_goal = self._task.get_task_descriptions()[0]
+
+        # update VoxPoserRLBench2Robots variables
+        self._rlbench_env.init_obs = obs
+        self._rlbench_env.latest_obs = obs
+        self._rlbench_env._update_visualizer()
+
+        # NOTE: need to call scene.step and get the observation again; otherwise,
+        # the environment would not be properly reset. HACK but couldn't find a more elegant fix.
+        self._rlbench_env.task._scene.step()
+        obs = self._task.get_observation()
+        obs = self._rlbench_env._process_obs(obs)
+        self._rlbench_env.init_obs = obs
+        self._rlbench_env.latest_obs = obs
+        self._rlbench_env._update_visualizer()
+
+        try:
+            if self._rlbench_env._dominant_assitive_policy and hasattr(self._task._scene.task, "get_waypoints_dominant_assistive"):
+                waypoints, waypoints_labels = self._task._scene.task.get_waypoints_dominant_assistive(dominant=self._rlbench_env._dominant_arm)
+            else:
+                waypoints, waypoints_labels = self._task._scene.task.get_waypoints()
+            if len(waypoints) == 0:
+                print("!!! Object cannot be reached, re-placing the object.")
+                self.reset_to_demo_voxposer(i, ep_number)
+        except:
+            print("!!! Object cannot be reached, re-placing the object.")
+            self.reset_to_demo_voxposer(i, ep_number)
+
+    def reload_voxposer_variables(self):
+        pass
+
+    def get_dominant_arm(self):
+        if self._rlbench_env:
+            return self._rlbench_env._dominant_arm
+        return "right"  
 
 
 class CustomMultiTaskRLBenchEnv(MultiTaskRLBenchEnv):

@@ -451,6 +451,7 @@ def create_agent(cfg: DictConfig):
         episode_length=cfg.rlbench.episode_length,
         train_demo_path=cfg.method.train_demo_path,
         task_name=cfg.rlbench.tasks[0],
+        wandb_run=cfg.framework.wandb_logging,
     )
 
     return PreprocessAgent(pose_agent=bc_agent, norm_type="imagenet")

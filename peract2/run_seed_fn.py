@@ -35,6 +35,7 @@ def run_seed(
 
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
+
     tasks = cfg.rlbench.tasks
     cams = cfg.rlbench.cameras
 
@@ -163,6 +164,30 @@ def run_seed(
             cfg.method.crop_augmentation,
             keypoint_method=cfg.method.keypoint_method,
         )
+    elif cfg.method.name == 'VOXACTB':
+        from agents import voxactb
+        replay_buffer = voxactb.launch_utils.create_replay(
+            cfg.replay.batch_size, cfg.replay.timesteps,
+            cfg.replay.prioritisation,
+            cfg.replay.task_uniform,
+            replay_path if cfg.replay.use_disk else None,
+            cams, cfg.method.voxel_sizes,
+            cfg.rlbench.camera_resolution,
+            which_arm=cfg.method.which_arm,
+            crop_target_obj_voxel=cfg.method.crop_target_obj_voxel,
+            arm_pred_loss=cfg.method.arm_pred_loss,
+            arm_id_to_proprio=cfg.method.arm_id_to_proprio)
+
+        voxactb.launch_utils.fill_multi_task_replay(
+            cfg, obs_config, rank,
+            replay_buffer, tasks, cfg.rlbench.demos,
+            cfg.method.demo_augmentation, cfg.method.demo_augmentation_every_n,
+            cams, cfg.rlbench.scene_bounds,
+            cfg.method.voxel_sizes, cfg.method.bounds_offset,
+            cfg.method.rotation_resolution, cfg.method.crop_augmentation,
+            keypoint_method=cfg.method.keypoint_method)
+
+        agent = voxactb.launch_utils.create_agent(cfg)
 
     elif (
         cfg.method.name.startswith("BIMANUAL_PERACT")
@@ -188,10 +213,16 @@ def run_seed(
     weightsdir = os.path.join(cwd, "seed%d" % seed, "weights")
     logdir = os.path.join(cwd, "seed%d" % seed)
 
+
+    if cfg.ddp.cpu:
+        train_device = 'cpu'
+    else:
+        train_device = rank
+    
     train_runner = OfflineTrainRunner(
         agent=agent,
         wrapped_replay_buffer=wrapped_replay,
-        train_device=rank,
+        train_device=train_device,
         stat_accumulator=stat_accum,
         iterations=cfg.framework.training_iterations,
         logdir=logdir,
@@ -208,6 +239,7 @@ def run_seed(
         wandb_run=wandb_run,
     )
 
+    
     train_runner._on_thread_start = partial(
         peract_config.config_logging, cfg.framework.logging_level
     )

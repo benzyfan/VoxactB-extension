@@ -1,0 +1,15 @@
+- method=BIMANUAL_PERACT
+- rlbench.task_name=temptest
+- rlbench.tasks=[bimanual_transfer_item]
+- rlbench.demo_path=/project2/seita_1561/peract2_data/val
+- rlbench.cameras=[over_shoulder_left,over_shoulder_right,overhead,wrist_right,wrist_left,front]
+- rlbench.scene_bounds=[-0.8,-1.0,0.8,1.2,1.0,2.8]
+- rlbench.gripper_mode=BimanualDiscrete
+- rlbench.arm_action_mode=BimanualEndEffectorPoseViaPlanning
+- rlbench.action_mode=BimanualMoveArmThenGripper
+- framework.eval_type=missing
+- framework.eval_episodes=1
+- framework.logdir=/project2/seita_1561/templog/bimanual_log
+- framework.tensorboard_logging=False
+- rlbench.headless=True
+- framework.start_seed=22

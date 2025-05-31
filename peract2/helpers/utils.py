@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 from rlbench.backend.observation import Observation
 from rlbench import CameraConfig, ObservationConfig
 from pyrep.const import RenderMode
-from typing import List
+from typing import List, Optional
 
 
 SCALE_FACTOR = DEPTH_SCALE
@@ -344,3 +344,527 @@ def get_device(gpu):
     else:
         device = torch.device("cpu")
     return device
+
+# Added to visualzie the peract_bimanual voxel size
+def save_visualised_voxel_npz(
+    filepath: str,
+    voxel_grid: np.ndarray,
+    q_attention: Optional[np.ndarray] = None,
+    highlight_coordinate: Optional[np.ndarray] = None,
+    highlight_gt_coordinate: Optional[np.ndarray] = None,
+):
+    """
+    Save the core arrays required to reconstruct a 3D scene into a .npz file:
+      - voxel_grid              (C, D, H, W)
+      - q_attention             (D, H, W) or (1, D, H, W) (if provided)
+      - highlight_coordinate    (3,) (if provided)
+      - highlight_gt_coordinate (3,) (if provided)
+    """
+    to_save = {'voxel_grid': voxel_grid}
+    if q_attention is not None:
+        to_save['q_attention'] = q_attention
+    if highlight_coordinate is not None:
+        to_save['highlight_coordinate'] = highlight_coordinate
+    if highlight_gt_coordinate is not None:
+        to_save['highlight_gt_coordinate'] = highlight_gt_coordinate
+
+    np.savez_compressed(filepath, **to_save)
+    print(f"[VoxelScene] is saved to : {filepath}")
+
+
+    # !!!!!!!!!!! Function from Voxactb !!!!!!!!!!!!1111
+
+def create_gt_voxel_scene(
+        voxel_grid: np.ndarray,
+        highlight_gt_coordinate: np.ndarray = None,
+        highlight_alpha: float = 1.0,
+        voxel_size: float = 0.1,
+        show_bb: bool = False,
+        alpha: float = 0.5):
+    _, d, h, w = voxel_grid.shape
+    v = voxel_grid.transpose((1, 2, 3, 0))
+    occupancy = v[:, :, :, -1] != 0
+    alpha = np.expand_dims(np.full_like(occupancy, alpha, dtype=np.float32), -1)
+    rgb = np.concatenate([(v[:, :, :, 3:6] + 1)/ 2.0, alpha], axis=-1)
+
+    if highlight_gt_coordinate is not None:
+        # ground truth coordinate is green
+        x, y, z = highlight_gt_coordinate
+        occupancy[x, y, z] = True
+        rgb[x, y, z] = [0.0, 1.0, 0.0, highlight_alpha]
+
+    transform = trimesh.transformations.scale_and_translate(
+        scale=voxel_size, translate=(0.0, 0.0, 0.0))
+    trimesh_voxel_grid = trimesh.voxel.VoxelGrid(
+        encoding=occupancy, transform=transform)
+    geometry = trimesh_voxel_grid.as_boxes(colors=rgb)
+    scene = trimesh.Scene()
+    scene.add_geometry(geometry)
+    if show_bb:
+        assert d == h == w
+        _create_bounding_box(scene, voxel_size, d)
+    return scene
+
+def visualise_gt_voxel(voxel_grid: np.ndarray,
+                    highlight_gt_coordinate: np.ndarray = None,
+                    highlight_alpha: float = 1.0,
+                    rotation_amount: float = 0.0,
+                    show: bool = False,
+                    voxel_size: float = 0.1,
+                    offscreen_renderer: pyrender.OffscreenRenderer = None,
+                    show_bb: bool = False,
+                    alpha: float = 0.5):
+    scene = create_gt_voxel_scene(
+        voxel_grid, highlight_gt_coordinate,
+        highlight_alpha, voxel_size,
+        show_bb, alpha)
+    if show:
+        scene.show()
+    else:
+        r = offscreen_renderer or pyrender.OffscreenRenderer(
+            viewport_width=640, viewport_height=480, point_size=1.0)
+        s = _from_trimesh_scene(
+            scene, ambient_light=[0.8, 0.8, 0.8],
+            bg_color=[1.0, 1.0, 1.0])
+        cam = pyrender.PerspectiveCamera(
+            yfov=np.pi / 4.0, aspectRatio=r.viewport_width/r.viewport_height)
+        p = _compute_initial_camera_pose(s)
+        t = Trackball(p, (r.viewport_width, r.viewport_height), s.scale, s.centroid)
+        t.rotate(rotation_amount, np.array([0.0, 0.0, 1.0]))
+        s.add(cam, pose=t.pose)
+        color, depth = r.render(s)
+        return color.copy()
+
+def create_voxel_scene_2robots(
+        voxel_grid: np.ndarray,
+        q_attention_right: np.ndarray = None,
+        highlight_coordinate_right: np.ndarray = None,
+        highlight_gt_coordinate_right: np.ndarray = None,
+        q_attention_left: np.ndarray = None,
+        highlight_coordinate_left: np.ndarray = None,
+        highlight_gt_coordinate_left: np.ndarray = None,
+        highlight_alpha: float = 1.0,
+        voxel_size: float = 0.1,
+        show_bb: bool = False,
+        alpha: float = 0.5):
+    _, d, h, w = voxel_grid.shape
+    v = voxel_grid.transpose((1, 2, 3, 0))
+    occupancy = v[:, :, :, -1] != 0
+    alpha = np.expand_dims(np.full_like(occupancy, alpha, dtype=np.float32), -1)
+    rgb = np.concatenate([(v[:, :, :, 3:6] + 1)/ 2.0, alpha], axis=-1)
+
+    if q_attention_right is not None:
+        q = np.max(q_attention_right, 0)
+        q = q / np.max(q)
+        show_q = (q > 0.75)
+        occupancy = (show_q + occupancy).astype(bool)
+        q = np.expand_dims(q - 0.5, -1)  # Max q can be is 0.9
+        q_rgb = np.concatenate([
+            q, np.zeros_like(q), np.zeros_like(q),
+            np.clip(q, 0, 1)], axis=-1)
+        rgb = np.where(np.expand_dims(show_q, -1), q_rgb, rgb)
+
+    if highlight_coordinate_right is not None:
+        x, y, z = highlight_coordinate_right
+        occupancy[x, y, z] = True
+        # red is right arm's prediction
+        rgb[x, y, z] = [1.0, 0.0, 0.0, highlight_alpha]
+
+    if highlight_gt_coordinate_right is not None:
+        x, y, z = highlight_gt_coordinate_right
+        occupancy[x, y, z] = True
+        # green is ground truth
+        rgb[x, y, z] = [0.0, 1.0, 0.0, highlight_alpha]
+
+    if q_attention_left is not None:
+        q = np.max(q_attention_left, 0)
+        q = q / np.max(q)
+        show_q = (q > 0.75)
+        occupancy = (show_q + occupancy).astype(bool)
+        q = np.expand_dims(q - 0.5, -1)  # Max q can be is 0.9
+        q_rgb = np.concatenate([
+            q, np.zeros_like(q), np.zeros_like(q),
+            np.clip(q, 0, 1)], axis=-1)
+        rgb = np.where(np.expand_dims(show_q, -1), q_rgb, rgb)
+
+    if highlight_coordinate_left is not None:
+        x, y, z = highlight_coordinate_left
+        occupancy[x, y, z] = True
+        # blue is left arm's prediction
+        rgb[x, y, z] = [0.0, 0.0, 1.0, highlight_alpha]
+
+    if highlight_gt_coordinate_left is not None:
+        x, y, z = highlight_gt_coordinate_left
+        occupancy[x, y, z] = True
+        # green is ground truth
+        rgb[x, y, z] = [0.0, 1.0, 0.0, highlight_alpha]
+
+    transform = trimesh.transformations.scale_and_translate(
+        scale=voxel_size, translate=(0.0, 0.0, 0.0))
+    trimesh_voxel_grid = trimesh.voxel.VoxelGrid(
+        encoding=occupancy, transform=transform)
+    geometry = trimesh_voxel_grid.as_boxes(colors=rgb)
+    scene = trimesh.Scene()
+    scene.add_geometry(geometry)
+    if show_bb:
+        assert d == h == w
+        _create_bounding_box(scene, voxel_size, d)
+    return scene
+
+
+def visualise_voxel_2robots(voxel_grid: np.ndarray,
+                    q_attention_right: np.ndarray = None,
+                    highlight_coordinate_right: np.ndarray = None,
+                    highlight_gt_coordinate_right: np.ndarray = None,
+                    q_attention_left: np.ndarray = None,
+                    highlight_coordinate_left: np.ndarray = None,
+                    highlight_gt_coordinate_left: np.ndarray = None,
+                    highlight_alpha: float = 1.0,
+                    rotation_amount: float = 0.0,
+                    show: bool = False,
+                    voxel_size: float = 0.1,
+                    offscreen_renderer: pyrender.OffscreenRenderer = None,
+                    show_bb: bool = False,
+                    alpha: float = 0.5):
+    scene = create_voxel_scene_2robots(
+        voxel_grid, q_attention_right, highlight_coordinate_right, highlight_gt_coordinate_right,
+        q_attention_left, highlight_coordinate_left, highlight_gt_coordinate_left,
+        highlight_alpha, voxel_size,
+        show_bb, alpha)
+    if show:
+        scene.show()
+    else:
+        r = offscreen_renderer or pyrender.OffscreenRenderer(
+            viewport_width=640, viewport_height=480, point_size=1.0)
+        s = _from_trimesh_scene(
+            scene, ambient_light=[0.8, 0.8, 0.8],
+            bg_color=[1.0, 1.0, 1.0])
+        cam = pyrender.PerspectiveCamera(
+            yfov=np.pi / 4.0, aspectRatio=r.viewport_width/r.viewport_height)
+        p = _compute_initial_camera_pose(s)
+        t = Trackball(p, (r.viewport_width, r.viewport_height), s.scale, s.centroid)
+        t.rotate(rotation_amount, np.array([0.0, 0.0, 1.0]))
+        s.add(cam, pose=t.pose)
+        color, depth = r.render(s)
+        return color.copy()
+
+
+def extract_obs(obs: Observation,
+                cameras,
+                t: int = 0,
+                prev_action=None,
+                channels_last: bool = False,
+                episode_length: int = 10,
+                which_arm: str = 'right',
+                keypoint_label = None):
+    
+    obs_dict = {}
+    
+    for camera_name in cameras:
+        for data_type in ['rgb', 'depth', 'mask', 'point_cloud']:
+            key = f'{camera_name}_{data_type}'
+            if key in obs.perception_data:
+                data = obs.perception_data[key]
+                
+                if data_type == 'point_cloud':
+                    if data.shape[-1] == 3:  
+                        data = np.transpose(data, [2, 0, 1])
+                    obs_dict[key] = data.astype(np.float32)
+                elif not channels_last and data.ndim == 3:
+                    obs_dict[key] = np.transpose(data, [2, 0, 1])
+                elif data.ndim == 2:
+                    if not channels_last:
+                        obs_dict[key] = np.expand_dims(data, 0) 
+                    else:
+                        obs_dict[key] = np.expand_dims(data, -1) 
+                else:
+                    obs_dict[key] = data
+        
+        if f'{camera_name}_camera_extrinsics' in obs.misc:
+            obs_dict[f'{camera_name}_camera_extrinsics'] = obs.misc[f'{camera_name}_camera_extrinsics']
+        if f'{camera_name}_camera_intrinsics' in obs.misc:
+            obs_dict[f'{camera_name}_camera_intrinsics'] = obs.misc[f'{camera_name}_camera_intrinsics']
+    
+    
+    if obs.is_bimanual:
+        if which_arm == 'both':
+            if obs.right and obs.right.gripper_joint_positions is not None:
+                right_joint_positions = np.clip(obs.right.gripper_joint_positions, 0., 0.04)
+                robot_state_right = np.array([
+                    obs.right.gripper_open if obs.right.gripper_open is not None else 0.0,
+                    *right_joint_positions
+                ])
+                obs_dict['low_dim_state_right_arm'] = robot_state_right
+            
+            if obs.left and obs.left.gripper_joint_positions is not None:
+                left_joint_positions = np.clip(obs.left.gripper_joint_positions, 0., 0.04)
+                robot_state_left = np.array([
+                    obs.left.gripper_open if obs.left.gripper_open is not None else 0.0,
+                    *left_joint_positions
+                ])
+                obs_dict['low_dim_state_left_arm'] = robot_state_left
+        
+            if keypoint_label is None:
+                time = (1. - (t / float(episode_length - 1))) * 2. - 1.
+                if 'low_dim_state_right_arm' in obs_dict:
+                    obs_dict['low_dim_state_right_arm'] = np.concatenate(
+                        [obs_dict['low_dim_state_right_arm'], [time]]).astype(np.float32)
+                if 'low_dim_state_left_arm' in obs_dict:
+                    obs_dict['low_dim_state_left_arm'] = np.concatenate(
+                        [obs_dict['low_dim_state_left_arm'], [time]]).astype(np.float32)
+        
+        elif which_arm == 'right':
+            # right arm
+            if obs.right and obs.right.gripper_joint_positions is not None:
+                right_joint_positions = np.clip(obs.right.gripper_joint_positions, 0., 0.04)
+                robot_state = np.array([
+                    obs.right.gripper_open if obs.right.gripper_open is not None else 0.0,
+                    *right_joint_positions
+                ])
+                obs_dict['low_dim_state'] = robot_state
+            
+        elif which_arm == 'left':
+            # left arm
+            if obs.left and obs.left.gripper_joint_positions is not None:
+                left_joint_positions = np.clip(obs.left.gripper_joint_positions, 0., 0.04)
+                robot_state = np.array([
+                    obs.left.gripper_open if obs.left.gripper_open is not None else 0.0,
+                    *left_joint_positions
+                ])
+                obs_dict['low_dim_state'] = robot_state
+            
+        elif which_arm == 'dominant' or which_arm == 'assistive':
+            # bimanual arms
+            left_joint_positions = np.clip(obs.left.gripper_joint_positions, 0., 0.04) if obs.left and obs.left.gripper_joint_positions is not None else np.array([])
+            right_joint_positions = np.clip(obs.right.gripper_joint_positions, 0., 0.04) if obs.right and obs.right.gripper_joint_positions is not None else np.array([])
+            
+            robot_state = np.array([
+                obs.left.gripper_open if obs.left and obs.left.gripper_open is not None else 0.0,
+                *left_joint_positions,
+                obs.right.gripper_open if obs.right and obs.right.gripper_open is not None else 0.0,
+                *right_joint_positions
+            ])
+            obs_dict['low_dim_state'] = robot_state
+        
+        if which_arm != 'both' and keypoint_label is None:
+            time = (1. - (t / float(episode_length - 1))) * 2. - 1.
+            if 'low_dim_state' in obs_dict:
+                obs_dict['low_dim_state'] = np.concatenate(
+                    [obs_dict['low_dim_state'], [time]]).astype(np.float32)
+        elif which_arm == 'dominant' or which_arm == 'assistive':
+            time = (1. - (t / float(episode_length - 1))) * 2. - 1.
+            if 'low_dim_state' in obs_dict:
+                obs_dict['low_dim_state'] = np.concatenate(
+                    [obs_dict['low_dim_state'], [time], [keypoint_label]]).astype(np.float32)
+        elif keypoint_label is not None:
+            if 'low_dim_state' in obs_dict:
+                obs_dict['low_dim_state'] = np.concatenate(
+                    [obs_dict['low_dim_state'], [keypoint_label]]).astype(np.float32)
+        
+        # ignore_collisions
+        if obs.right and hasattr(obs.right, 'ignore_collisions') and obs.right.ignore_collisions is not None:
+            obs_dict['ignore_collisions'] = np.array([obs.right.ignore_collisions], dtype=np.float32)
+        elif obs.left and hasattr(obs.left, 'ignore_collisions') and obs.left.ignore_collisions is not None:
+            obs_dict['ignore_collisions'] = np.array([obs.left.ignore_collisions], dtype=np.float32)
+        else:
+            obs_dict['ignore_collisions'] = np.array([0], dtype=np.float32)
+            
+    else:
+        # single arm
+        if obs.gripper_joint_positions is not None:
+            gripper_joint_positions = np.clip(obs.gripper_joint_positions, 0., 0.04)
+            robot_state = np.array([
+                obs.gripper_open if obs.gripper_open is not None else 0.0,
+                *gripper_joint_positions
+            ])
+            obs_dict['low_dim_state'] = robot_state
+            
+            if keypoint_label is None:
+                time = (1. - (t / float(episode_length - 1))) * 2. - 1.
+                obs_dict['low_dim_state'] = np.concatenate(
+                    [obs_dict['low_dim_state'], [time]]).astype(np.float32)
+            else:
+                obs_dict['low_dim_state'] = np.concatenate(
+                    [obs_dict['low_dim_state'], [keypoint_label]]).astype(np.float32)
+        
+        # ignore_collisions
+        if hasattr(obs, 'ignore_collisions') and obs.ignore_collisions is not None:
+            obs_dict['ignore_collisions'] = np.array([obs.ignore_collisions], dtype=np.float32)
+        else:
+            obs_dict['ignore_collisions'] = np.array([0], dtype=np.float32)
+    
+    return obs_dict
+
+
+def create_obs_config(camera_names: List[str],
+                       camera_resolution: List[int],
+                       method_name: str):
+    unused_cams = CameraConfig()
+    unused_cams.set_all(False)
+    used_cams = CameraConfig(
+        rgb=True,
+        point_cloud=True,
+        mask=False,
+        depth=False,
+        image_size=camera_resolution,
+        render_mode=RenderMode.OPENGL)
+
+    cam_obs = []
+    kwargs = {}
+    for n in camera_names:
+        kwargs[n] = used_cams
+        cam_obs.append('%s_rgb' % n)
+        cam_obs.append('%s_pointcloud' % n)
+
+    # Some of these obs are only used for keypoint detection.
+    obs_config = ObservationConfig2Robots(
+        front_camera=kwargs.get('front', unused_cams),
+        wrist_camera=kwargs.get('wrist', unused_cams),
+        wrist2_camera=kwargs.get('wrist2', unused_cams),
+        joint_forces_right=False,
+        joint_positions_right=True,
+        joint_velocities_right=True,
+        joint_forces_left=False,
+        joint_positions_left=True,
+        joint_velocities_left=True,
+        task_low_dim_state=False,
+        gripper_right_touch_forces=False,
+        gripper_right_pose=True,
+        gripper_right_open=True,
+        gripper_right_matrix=True,
+        gripper_right_joint_positions=True,
+        gripper_left_touch_forces=False,
+        gripper_left_pose=True,
+        gripper_left_open=True,
+        gripper_left_matrix=True,
+        gripper_left_joint_positions=True,
+    )
+    return obs_config
+
+
+def create_obs_config_voxposer(camera_names: List[str],
+                       camera_resolution: List[int],
+                       method_name: str):
+    unused_cams = CameraConfig()
+    unused_cams.set_all(False)
+    used_cams = CameraConfig(
+        rgb=True,
+        point_cloud=True,
+        mask=True,
+        depth=True,
+        image_size=camera_resolution,
+        render_mode=RenderMode.OPENGL)
+
+    cam_obs = []
+    kwargs = {}
+    for n in camera_names:
+        kwargs[n] = used_cams
+        cam_obs.append('%s_rgb' % n)
+        cam_obs.append('%s_pointcloud' % n)
+
+    # Some of these obs are only used for keypoint detection.
+    obs_config = ObservationConfig2Robots(
+        front_camera=kwargs.get('front', unused_cams),
+        wrist_camera=kwargs.get('wrist', unused_cams),
+        wrist2_camera=kwargs.get('wrist2', unused_cams),
+
+        joint_forces_right=False,
+
+        joint_positions_right=True,
+        joint_velocities_right=True,
+        joint_forces_left=False,
+
+        joint_positions_left=True,
+        joint_velocities_left=True,
+
+        task_low_dim_state=False,
+
+        gripper_right_touch_forces=False,
+
+        gripper_right_pose=True,
+        gripper_right_open=True,
+        gripper_right_matrix=True,
+        gripper_right_joint_positions=True,
+
+        gripper_left_touch_forces=False,
+        
+        gripper_left_pose=True,
+        gripper_left_open=True,
+        gripper_left_matrix=True,
+        gripper_left_joint_positions=True,
+    )
+    return obs_config
+
+
+
+# function from voxactb
+def get_new_scene_bounds_based_on_crop(radius, target_object_pos):
+    target_object_pos = np.round(target_object_pos, 2)
+    new_scene_bounds = [target_object_pos[0] - radius,\
+                        target_object_pos[1] - radius,\
+                        target_object_pos[2] - radius,\
+                        target_object_pos[0] + radius,\
+                        target_object_pos[1] + radius,\
+                        target_object_pos[2] + radius]
+    return new_scene_bounds
+
+def visualize_act_input(
+    stacked_rgb: torch.Tensor,
+    stacked_point_cloud: torch.Tensor,
+    camera_names: List[str],
+    show: bool = True,
+    save_path: str = None
+):
+    """
+    Visualize the inputs of act_bc_lang agent including RGB images and point clouds.
+    
+    Args:
+        stacked_rgb: RGB images from multiple cameras [B, num_cameras, C, H, W]
+        stacked_point_cloud: Point cloud data from multiple cameras [B, num_cameras, H, W, 3]
+        camera_names: List of camera names
+        show: Whether to show the visualization
+        save_path: If provided, save the visualization to this path
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Convert tensors to numpy arrays
+    rgb_images = stacked_rgb[0].cpu().numpy()  # [num_cameras, C, H, W]
+    point_clouds = stacked_point_cloud[0].cpu().numpy()  # [num_cameras, H, W, 3]
+    
+    # Create a figure with subplots for each camera
+    num_cameras = len(camera_names)
+    fig = plt.figure(figsize=(15, 5 * num_cameras))
+    
+    for i, camera_name in enumerate(camera_names):
+        # Plot RGB image
+        ax1 = fig.add_subplot(num_cameras, 2, 2*i + 1)
+        rgb_image = np.transpose(rgb_images[i], (1, 2, 0))  # [H, W, C]
+        ax1.imshow(rgb_image)
+        ax1.set_title(f'RGB Image - {camera_name}')
+        ax1.axis('off')
+        
+        # Plot point cloud
+        ax2 = fig.add_subplot(num_cameras, 2, 2*i + 2, projection='3d')
+        point_cloud = point_clouds[i].reshape(-1, 3)  # [N, 3]
+        # Filter out invalid points (usually zeros)
+        valid_points = point_cloud[~np.all(point_cloud == 0, axis=1)]
+        if len(valid_points) > 0:
+            ax2.scatter(valid_points[:, 0], valid_points[:, 1], valid_points[:, 2], 
+                       c='b', marker='.', s=1, alpha=0.5)
+        ax2.set_title(f'Point Cloud - {camera_name}')
+        ax2.set_xlabel('X')
+        ax2.set_ylabel('Y')
+        ax2.set_zlabel('Z')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path)
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
+    
+    return fig

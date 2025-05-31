@@ -9,10 +9,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from yarr.agents.agent import Agent, Summary, ActResult, ScalarSummary, HistogramSummary
+from yarr.agents.agent import Agent, Summary, ActResult, ScalarSummary, HistogramSummary, ImageSummary
 
 from helpers import utils
-from helpers.utils import stack_on_channel
+from helpers.utils import stack_on_channel, visualise_voxel
 
 from helpers.clip.core.clip import build_model, load_clip
 
@@ -30,6 +30,7 @@ class ActBCLangAgent(Agent):
         episode_length: int = 400,
         train_demo_path=None,
         task_name=None,
+        wandb_run=None,
     ):
         self._camera_names = camera_names
         self._actor = actor_network
@@ -39,6 +40,7 @@ class ActBCLangAgent(Agent):
         self._episode_length = episode_length
         self.train_demo_path = train_demo_path
         self.task_name = task_name
+        self._wandb_run = wandb_run
 
     def build(self, training: bool, device: torch.device = None):
         if device is None:
@@ -246,6 +248,28 @@ class ActBCLangAgent(Agent):
         stacked_rgb, stacked_point_cloud = self.preprocess_images(replay_sample)
         is_pad = replay_sample["is_pad"].bool()
 
+        # # Check the input of this method
+        # print("=== ACT_BC_LANG Final Inputs ===")
+        # print("Language Goal Embedding shape:", replay_sample["lang_goal_emb"].shape)
+        # print("Robot State shape:", replay_sample["low_dim_state"].shape)
+        # print("QPOS shape:", qpos.shape)
+        # print("Action Sequence shape:", action_seq.shape)
+        # print("Stacked RGB shape:", stacked_rgb.shape)
+        # print("Stacked Point Cloud shape:", stacked_point_cloud.shape)
+        # print("Is Pad shape:", replay_sample["is_pad"].shape)
+        # print("=============================")
+
+        # Visualize the inputs
+        # from helpers.utils import visualize_act_input
+
+        # Create visualization and show it
+        # visualize_act_input(
+        #     stacked_rgb=stacked_rgb,
+        #     stacked_point_cloud=stacked_point_cloud,
+        #     camera_names=self._camera_names,
+        #     show=True  # This will display the visualization on your laptop
+        # )
+
         # forward pass
         loss_dict = self._actor(qpos, stacked_rgb, action_seq, is_pad)
 
@@ -355,16 +379,19 @@ class ActBCLangAgent(Agent):
 
     def update_summaries(self) -> List[Summary]:
         summaries = []
+        wandb_dict = {}
         for n, v in self._summaries.items():
             summaries.append(ScalarSummary("%s/%s" % (NAME, n), v))
+            if self._wandb_run is not None:
+                # Ensure the value is converted to a scalar
+                if isinstance(v, torch.Tensor):
+                    wandb_dict['%s/%s' % (NAME, n)] = v.detach().cpu().item()
+                else:
+                    wandb_dict['%s/%s' % (NAME, n)] = float(v)
 
-        # for tag, param in self._actor.named_parameters():
-        #     summaries.append(
-        #
-        #     summaries.append(
-        #         HistogramSummary('%s/weight/%s' % (NAME, tag), param.data))
-
-        return summaries
+        #print("Now we have the self._wandb_run as ", self._wandb_run)
+        #print("the wandb dict is ", wandb_dict)
+        return summaries, wandb_dict
 
     def act_summaries(self) -> List[Summary]:
         return []
