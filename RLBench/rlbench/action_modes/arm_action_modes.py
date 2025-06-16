@@ -533,9 +533,6 @@ class EndEffectorPoseViaIK(ArmActionMode):
         return 7,
 
 class SelectableUnimanualArmEndEffectorPoseViaPlanning(ArmActionMode):
-    """
-    管理左右两个 Unimanual 手臂控制器，并根据 'which_arm' 选择执行。
-    """
     def __init__(self,
                  absolute_mode: bool = True,
                  frame: str = 'world',
@@ -551,7 +548,6 @@ class SelectableUnimanualArmEndEffectorPoseViaPlanning(ArmActionMode):
 
     def action(self, scene: Scene, arm_action: np.ndarray,
                ignore_collisions: bool = True, which_arm: str = 'left'):
-        """根据 which_arm 选择并执行手臂动作。"""
         if which_arm == 'left':
             self.left_arm.action(scene, arm_action, ignore_collisions)
         elif which_arm == 'right':
@@ -560,5 +556,4 @@ class SelectableUnimanualArmEndEffectorPoseViaPlanning(ArmActionMode):
             raise ValueError(f"Invalid 'which_arm': {which_arm}")
 
     def action_shape(self, scene: Scene) -> tuple:
-        """返回单个手臂的动作形状。"""
         return self.left_arm.action_shape(scene) # 7

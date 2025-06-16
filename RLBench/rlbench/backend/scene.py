@@ -51,7 +51,8 @@ class Scene(object):
                  robot: Robot,
                  obs_config: ObservationConfig = ObservationConfig(),
                  robot_setup: str = 'panda',
-                 vlm: bool = True):
+                 vlm: bool = True,
+                 mode: str = 'default' ):
         self.pyrep = pyrep
         self.robot = robot
         self.robot_setup = robot_setup
@@ -59,6 +60,8 @@ class Scene(object):
         self._obs_config = obs_config
         self._initial_task_state = None
         self._vlm = vlm
+        self._workspace = Shape('workspace')
+        self._workspace_boundary = SpawnBoundary([self._workspace])
 
         if self.robot.is_bimanual:
             self._start_arm_joint_pos = [robot.right_arm.get_joint_positions(), robot.left_arm.get_joint_positions()]
@@ -76,6 +79,7 @@ class Scene(object):
 
         self._has_init_task = self._has_init_episode = False
         self._variation_index = 0
+        self._mode = mode
 
         # ..todo:: fixme convert to a list
         if self.robot.is_bimanual:
@@ -118,6 +122,9 @@ class Scene(object):
         #Use for voxactb method
         self.target_object_pos = None
         self.auto_crop_radius = 0.0
+        # self.unused_robot = Robot(Panda(2), PandaGripper(2))
+        # self._start_unused_arm_joint_pos = self.unused_robot.arm.get_joint_positions()
+        # self._starting_unused_gripper_joint_pos = self.unused_robot.gripper.get_joint_positions()
 
     def load(self, task: Task) -> None:
         """Loads the task and positions at the centre of the workspace.

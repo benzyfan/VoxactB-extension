@@ -12,5 +12,8 @@
     "open_drawer": [["top drawer", "drawer_frame"], ["bottom drawer handle", "drawer_bottom"]],
     "put_item_in_drawer": [["top drawer handle", "drawer_top"], ["item", "item"]],
     "hand_over_item": [["cube", "cube"]],
-    "sweep_to_dustpan": [["dirts", "dirts"], ["broom", "broom"], ["dustpan", "Dustpan_5"], ["dirt0", "dirt0"], ["dirt1", "dirt1"], ["dirt2", "dirt2"], ["dirt3", "dirt3"], ["dirt4", "dirt4"]]
+    "sweep_to_dustpan": [["dirts", "dirts"], ["broom", "broom"], ["dustpan", "Dustpan_5"], ["dirt0", "dirt0"], ["dirt1", "dirt1"], ["dirt2", "dirt2"], ["dirt3", "dirt3"], ["dirt4", "dirt4"]],
+    "bimanual_transfer_item":[["cube", "cube"]],
+    "bimanual_transfer_item_small":[["cube", "cube"]],
+    "left_pick_and_put":[["cube", "cube"]]
 }

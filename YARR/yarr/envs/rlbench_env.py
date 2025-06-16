@@ -20,12 +20,12 @@ from yarr.utils.transition import Transition
 from yarr.utils.process_str import change_case
 
 # VoxPoser imports
-# import openai
-# from voxposer.envs.rlbench_env import VoxPoserRLBench2Robots
-# from voxposer.visualizers import ValueMapVisualizer
-# from voxposer.arguments import get_config
-# from voxposer.interfaces import setup_LMP
-# from rlbench import tasks
+import openai
+from voxposer.envs.rlbench_env import VoxPoserRLBench2Robots
+from voxposer.visualizers import ValueMapVisualizer
+from voxposer.arguments import get_config
+from voxposer.interfaces import setup_LMP
+from rlbench import tasks
 
 import logging
 
@@ -214,9 +214,9 @@ class RLBenchEnv(Env):
 
         
         if issubclass(task_class, BimanualTask):
-            robot_setup = "dual_panda"  # TODO: check if this is correct
+            robot_setup = "dual_panda"  
         elif issubclass(task_class, DABimanualTask):
-            robot_setup = "dual_panda"
+            robot_setup = "dual_panda" # TODO: check if this is correct
         else:
             robot_setup = "panda"
 
