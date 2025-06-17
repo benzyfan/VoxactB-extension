@@ -151,7 +151,13 @@ class VLM():
             text_query = 'drawer frame'
         elif task_name in ['OpenJar', 'open_jar']:
             text_query = 'jar'
-        elif task_name in ['HandOverItem', 'hand_over_item', 'bimanual_handover_item_easy', 'bimanual_transfer_item']:
+        elif task_name in ['HandOverItem', 'hand_over_item']:
+            text_query = 'cube'
+        elif task_name in ['BimanualHandoverItemEasy','bimanual_handover_item_easy']:
+            text_query = 'cube'
+        elif task_name in ['BimanualTransferItem','bimanual_transfer_item']:
+            text_query = 'cube'
+        elif task_name in ['LeftPickAndPut','left_pick_and_put']:
             text_query = 'cube'
         else:
             print('!!!!!!!!!!!!!!!!!!!!!!! NotImplementedError in get_target_object_world_coords !!!!!!!!!!!!!!!!!!!!!!!')
